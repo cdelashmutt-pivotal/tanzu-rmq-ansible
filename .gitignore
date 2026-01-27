@@ -1,0 +1,4 @@
+*.retry
+*.log
+.vault_pass
+inventory/group_vars/all/vault.yml

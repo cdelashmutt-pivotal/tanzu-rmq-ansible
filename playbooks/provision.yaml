@@ -1,0 +1,23 @@
+---
+- name: Provision Lab VMs in vSphere
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vm_name: "tanzu-rmq-node-01"
+  tasks:
+    - name: Clone VM from Template
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_host }}"
+        username: "{{ vcenter_user }}"
+        password: "{{ vcenter_pass }}"
+        validate_certs: false
+        datacenter: "Your_Datacenter"
+        cluster: "Your_Cluster"
+        template: "rhel9-tanzu-template" # The name of the template you just made
+        name: "{{ vm_name }}"
+        state: poweredon
+        inventory_srv_grp: "Your_Port_Group"
+        networks:
+          - name: "Your_Network_Name"
+            type: dhcp # Or static if your lab requires it
+      delegate_to: localhost
