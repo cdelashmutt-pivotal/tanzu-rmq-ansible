@@ -10,6 +10,7 @@ vsphere:
   datastore: "vsanDatastore"
   folder: "rabbitmq-lab"
   template: "rhel9-6-template"
+  snapshot: "linked-clone-base"  # Set to use linked clones for faster provisioning
   network: "dvpg-mgmt-network"
 
 # ===========================================
@@ -30,7 +31,7 @@ latency:
   metro:
     delay_ms: 3
     jitter_ms: 1
-  cross_country:
+  cross_region:
     delay_ms: 35
     jitter_ms: 5
 

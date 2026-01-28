@@ -18,6 +18,8 @@
         template: "{{ vsphere.template }}"
         name: "{{ item }}"
         state: present
+        linked_clone: "{{ vsphere.snapshot is defined }}"
+        snapshot_src: "{{ vsphere.snapshot | default(omit) }}"
         networks:
           - name: "{{ vsphere.network }}"
             start_connected: true

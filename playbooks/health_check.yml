@@ -52,39 +52,56 @@
         fail_msg: "NETWORK PARTITION DETECTED: {{ cluster_info.partitions }}"
         success_msg: "No network partitions"
 
-- name: Check Phoenix Cluster
-  hosts: "{{ groups['stretched_cluster'][0] }}"
+- name: Check AZ-Cluster-1
+  hosts: "{{ groups['az_cluster_1'][0] }}"
   become: true
   gather_facts: false
   tasks:
-    - name: Verify Phoenix cluster size
+    - name: Verify AZ-Cluster-1 cluster size
       ansible.builtin.command: rabbitmqctl cluster_status --formatter json
-      register: phoenix_status
+      register: az1_status
       changed_when: false
 
-    - name: Assert Phoenix has 3 nodes
+    - name: Assert AZ-Cluster-1 has 3 nodes
       ansible.builtin.assert:
         that:
-          - (phoenix_status.stdout | from_json).running_nodes | length == 3
-        fail_msg: "Phoenix cluster should have 3 nodes, found {{ (phoenix_status.stdout | from_json).running_nodes | length }}"
-        success_msg: "Phoenix cluster has 3 healthy nodes"
+          - (az1_status.stdout | from_json).running_nodes | length == 3
+        fail_msg: "AZ-Cluster-1 should have 3 nodes, found {{ (az1_status.stdout | from_json).running_nodes | length }}"
+        success_msg: "AZ-Cluster-1 has 3 healthy nodes"
 
-- name: Check Dallas Cluster
-  hosts: "{{ groups['normal_cluster'][0] }}"
+- name: Check AZ-Cluster-2
+  hosts: "{{ groups['az_cluster_2'][0] }}"
   become: true
   gather_facts: false
   tasks:
-    - name: Verify Dallas cluster size
+    - name: Verify AZ-Cluster-2 cluster size
       ansible.builtin.command: rabbitmqctl cluster_status --formatter json
-      register: dallas_status
+      register: az2_status
       changed_when: false
 
-    - name: Assert Dallas has 3 nodes
+    - name: Assert AZ-Cluster-2 has 3 nodes
       ansible.builtin.assert:
         that:
-          - (dallas_status.stdout | from_json).running_nodes | length == 3
-        fail_msg: "Dallas cluster should have 3 nodes, found {{ (dallas_status.stdout | from_json).running_nodes | length }}"
-        success_msg: "Dallas cluster has 3 healthy nodes"
+          - (az2_status.stdout | from_json).running_nodes | length == 3
+        fail_msg: "AZ-Cluster-2 should have 3 nodes, found {{ (az2_status.stdout | from_json).running_nodes | length }}"
+        success_msg: "AZ-Cluster-2 has 3 healthy nodes"
+
+- name: Check TX-Cluster-1
+  hosts: "{{ groups['tx_cluster_1'][0] }}"
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify TX-Cluster-1 cluster size
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: tx1_status
+      changed_when: false
+
+    - name: Assert TX-Cluster-1 has 3 nodes
+      ansible.builtin.assert:
+        that:
+          - (tx1_status.stdout | from_json).running_nodes | length == 3
+        fail_msg: "TX-Cluster-1 should have 3 nodes, found {{ (tx1_status.stdout | from_json).running_nodes | length }}"
+        success_msg: "TX-Cluster-1 has 3 healthy nodes"
 
     - name: Check federation parameters
       ansible.builtin.command: rabbitmqctl list_parameters -p /
@@ -94,9 +111,26 @@
     - name: Verify federation is configured
       ansible.builtin.assert:
         that:
-          - "'phoenix-upstream' in fed_params.stdout"
+          - "'az-cluster-1-upstream' in fed_params.stdout"
         fail_msg: "Federation upstream not configured"
         success_msg: "Federation upstream configured"
+
+- name: Check TX-Cluster-2
+  hosts: "{{ groups['tx_cluster_2'][0] }}"
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify TX-Cluster-2 cluster size
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: tx2_status
+      changed_when: false
+
+    - name: Assert TX-Cluster-2 has 3 nodes
+      ansible.builtin.assert:
+        that:
+          - (tx2_status.stdout | from_json).running_nodes | length == 3
+        fail_msg: "TX-Cluster-2 should have 3 nodes, found {{ (tx2_status.stdout | from_json).running_nodes | length }}"
+        success_msg: "TX-Cluster-2 has 3 healthy nodes"
 
 - name: Health Check Summary
   hosts: localhost
@@ -108,8 +142,11 @@
           - "============================================"
           - "Health Check Complete"
           - "============================================"
-          - "Phoenix Cluster: {{ groups['stretched_cluster'] | length }} nodes"
-          - "Dallas Cluster:  {{ groups['normal_cluster'] | length }} nodes"
+          - "AZ-Cluster-1: {{ groups['az_cluster_1'] | length }} nodes"
+          - "AZ-Cluster-2: {{ groups['az_cluster_2'] | length }} nodes"
+          - "TX-Cluster-1: {{ groups['tx_cluster_1'] | length }} nodes"
+          - "TX-Cluster-2: {{ groups['tx_cluster_2'] | length }} nodes"
+          - "Federation:   AZ-Cluster-1 → TX-Cluster-1"
           - ""
           - "All checks passed!"
           - "============================================"

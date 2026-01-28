@@ -1,36 +1,41 @@
 # Tanzu RabbitMQ Ansible Lab
 
-Automated deployment of a Tanzu RabbitMQ lab environment with:
+Automated deployment of a Tanzu RabbitMQ multi-region lab environment with:
 
-- **Phoenix Cluster**: 3-node stretched cluster across 2 datacenters (metro WAN simulation)
-- **Dallas Cluster**: 3-node normal cluster configured as warm standby
-- **Network Latency**: Simulated metro (~3ms) and cross-country (~35ms) latency using tc/netem
-- **Federation**: Dallas automatically replicates from Phoenix
+- **4 Stretched Clusters** across 2 regions (Arizona + Texas), each with 3 nodes spanning 2 datacenters
+- **Network Latency Simulation**: Metro (~3ms) within regions, cross-region (~35ms) between Arizona and Texas
+- **Warm Standby DR**: AZ-Cluster-1 federates to TX-Cluster-1 for disaster recovery
+- **12 Nodes Total**: 6 in Arizona (Phoenix + Chandler DCs), 6 in Texas (Dallas1 + Dallas2 DCs)
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph phoenix["Phoenix Cluster (Stretched)"]
-        subgraph dc1["DC1 - 192.168.20.200-201"]
-            node01["tanzu-node-01<br/>(seed)"]
-            node02["tanzu-node-02"]
+flowchart TD
+    subgraph az_region["AZ Region"]
+        subgraph phx_dc["PHX DC"]
+            azrmq01["AZ RMQ 01"] --- azrmq02["AZ RMQ 02"]
+            azrmq04["AZ RMQ 04"]
         end
-        subgraph dc2["DC2 - 192.168.20.202"]
-            node03["tanzu-node-03"]
+        subgraph chd_dc["CHD DC"]
+            azrmq03["AZ RMQ 03"]
+            azrmq05["AZ RMQ 05"] --- azrmq06["AZ RMQ 06"]
         end
-        dc1 <-->|"~3ms ±1ms<br/>metro WAN"| dc2
+        azrmq02 ---- azrmq03
+        azrmq04 ---- azrmq05
     end
-
-    subgraph dallas["Dallas Cluster (Warm Standby)"]
-        subgraph dc3["DC - 192.168.20.203-205"]
-            node04["tanzu-node-04<br/>(seed)"]
-            node05["tanzu-node-05"]
-            node06["tanzu-node-06"]
+    subgraph tx_region["TX Region"]
+        subgraph dal1_dc["DAL1 DC"]
+            txrmq01["TX RMQ 01"] --- txrmq02["AZ RMQ 02"]
+            txrmq04["TX RMQ 04"]
         end
+        subgraph dal2_dc["DAL2 DC"]
+            txrmq03["TX RMQ 03"]
+            txrmq05["TX RMQ 05"] --- txrmq06["TX RMQ 06"]
+        end
+        txrmq02 ---- txrmq03
+        txrmq04 ---- txrmq05
     end
-
-    phoenix -->|"~35ms ±5ms<br/>cross-country<br/>federation"| dallas
+    az_region -- Warm Standby Replication (AZ RMQ 04 -> TX RMQ 01) 35ms+-5ms --- tx_region
 ```
 
 ## Prerequisites
@@ -78,7 +83,7 @@ Edit `inventory/group_vars/all/main.yml` to match your environment:
 
 Edit `inventory/hosts.yml` to adjust:
 - Node hostnames and IP addresses
-- Cluster membership
+- Cluster membership and DC assignments
 
 ### 5. Deploy
 
@@ -93,10 +98,11 @@ ansible-playbook site.yml
 | `site.yml` | Master playbook - runs everything |
 | `playbooks/provision.yml` | Create VMs in vSphere |
 | `playbooks/install_rmq.yml` | Install Tanzu RabbitMQ |
-| `playbooks/cluster_rmq.yml` | Form Phoenix and Dallas clusters |
+| `playbooks/cluster_rmq.yml` | Form 4 RabbitMQ clusters |
 | `playbooks/configure_latency.yml` | Setup network latency simulation |
-| `playbooks/configure_warm_standby.yml` | Configure federation/warm standby |
+| `playbooks/configure_warm_standby.yml` | Configure federation/warm standby DR |
 | `playbooks/health_check.yml` | Verify cluster health |
+| `playbooks/install_perftest.yml` | Install performance test tools |
 | `playbooks/destroy.yml` | Delete all lab VMs |
 
 ### Examples
@@ -141,7 +147,7 @@ latency:
   metro:
     delay_ms: 3
     jitter_ms: 1
-  cross_country:
+  cross_region:
     delay_ms: 35
     jitter_ms: 5
 ```
@@ -160,30 +166,45 @@ After deployment:
 
 | Cluster | URL | Credentials |
 |---------|-----|-------------|
-| Phoenix | http://192.168.20.200:15672 | admin / (your vault password) |
-| Dallas  | http://192.168.20.203:15672 | admin / (your vault password) |
+| AZ-Cluster-1 | http://192.168.20.200:15672 | admin / (your vault password) |
+| AZ-Cluster-2 | http://192.168.20.203:15672 | admin / (your vault password) |
+| TX-Cluster-1 | http://192.168.20.206:15672 | admin / (your vault password) |
+| TX-Cluster-2 | http://192.168.20.209:15672 | admin / (your vault password) |
 
 ## Inventory Structure
 
 ```
 nodes
-├── stretched_cluster (Phoenix)
-│   ├── phoenix_dc1
-│   │   ├── tanzu-node-01 (seed)
-│   │   └── tanzu-node-02
-│   └── phoenix_dc2
-│       └── tanzu-node-03
-└── normal_cluster (Dallas)
-    ├── tanzu-node-04 (seed)
-    ├── tanzu-node-05
-    └── tanzu-node-06
+├── arizona (Primary Region)
+│   ├── az_cluster_1 (1 Phoenix + 2 Chandler)
+│   │   ├── az-rmq-01 (Phoenix, seed)
+│   │   ├── az-rmq-02 (Chandler)
+│   │   └── az-rmq-03 (Chandler)
+│   └── az_cluster_2 (2 Phoenix + 1 Chandler)
+│       ├── az-rmq-04 (Phoenix, seed)
+│       ├── az-rmq-05 (Phoenix)
+│       └── az-rmq-06 (Chandler)
+├── texas (DR Region)
+│   ├── tx_cluster_1 (1 Dallas1 + 2 Dallas2)
+│   │   ├── tx-rmq-01 (Dallas1, seed)
+│   │   ├── tx-rmq-02 (Dallas2)
+│   │   └── tx-rmq-03 (Dallas2)
+│   └── tx_cluster_2 (2 Dallas1 + 1 Dallas2)
+│       ├── tx-rmq-04 (Dallas1, seed)
+│       ├── tx-rmq-05 (Dallas1)
+│       └── tx-rmq-06 (Dallas2)
+└── DC groups (for latency rules)
+    ├── phoenix_dc
+    ├── chandler_dc
+    ├── dallas1_dc
+    └── dallas2_dc
 ```
 
 ## Testing Federation
 
-1. Log into Phoenix management UI (http://192.168.20.200:15672)
+1. Log into AZ-Cluster-1 management UI (http://192.168.20.200:15672)
 2. Create an exchange or queue
-3. Log into Dallas management UI (http://192.168.20.203:15672)
+3. Log into TX-Cluster-1 management UI (http://192.168.20.206:15672)
 4. Verify the exchange/queue appears via federation
 5. Check **Admin → Federation Status** for link health
 
@@ -196,23 +217,25 @@ ansible-playbook playbooks/health_check.yml
 
 ### Manual cluster status
 ```bash
-ansible tanzu-node-01 -m command -a "rabbitmqctl cluster_status"
-ansible tanzu-node-04 -m command -a "rabbitmqctl cluster_status"
+ansible az-rmq-01 -m command -a "rabbitmqctl cluster_status"
+ansible az-rmq-04 -m command -a "rabbitmqctl cluster_status"
+ansible tx-rmq-01 -m command -a "rabbitmqctl cluster_status"
+ansible tx-rmq-04 -m command -a "rabbitmqctl cluster_status"
 ```
 
 ### Verify latency simulation
 ```bash
-# Metro latency (~3ms)
-ansible tanzu-node-01 -m command -a "ping -c 3 tanzu-node-03"
+# Metro latency within Arizona (~3ms)
+ansible az-rmq-01 -m command -a "ping -c 3 az-rmq-02"
 
-# Cross-country latency (~35ms)
-ansible tanzu-node-01 -m command -a "ping -c 3 tanzu-node-04"
+# Cross-region latency Arizona → Texas (~35ms)
+ansible az-rmq-01 -m command -a "ping -c 3 tx-rmq-01"
 ```
 
 ### Reset admin password
 ```bash
-ansible tanzu-node-01 -m command -a "rabbitmqctl change_password admin newpassword"
-ansible tanzu-node-04 -m command -a "rabbitmqctl change_password admin newpassword"
+# Reset on all cluster seeds
+ansible az-rmq-01,az-rmq-04,tx-rmq-01,tx-rmq-04 -m command -a "rabbitmqctl change_password admin newpassword"
 ```
 
 ### Re-run specific stage
@@ -222,6 +245,21 @@ ansible-playbook playbooks/cluster_rmq.yml
 
 # Re-configure federation
 ansible-playbook playbooks/configure_warm_standby.yml
+```
+
+## Performance Testing
+
+A test framework is included for validating throughput, latency, and replication under load. See [perf-tests/README.md](perf-tests/README.md) for full details.
+
+```bash
+# Install test tools
+ansible-playbook playbooks/install_perftest.yml
+
+# Run a baseline test against AZ-Cluster-1
+./perf-tests/run-test.sh baseline --host 192.168.20.200
+
+# Compare results
+./perf-tests/compare-results.sh
 ```
 
 ## Customization
@@ -234,6 +272,11 @@ To adapt for your environment:
 4. **Different cluster sizes**: Modify inventory groups and adjust playbooks
 5. **Skip latency simulation**: Remove `configure_latency.yml` from `site.yml`
 
+## Future Enhancements
+
+- **Shovel plugin**: Add shovel support alongside federation for fine-grained, per-queue replication between clusters. Compare shovel vs federation for DR use cases.
+- **Stream server-side filtering**: Add perf-test scenarios for stream consumers with server-side filtering to measure filtering performance under load.
+
 ## File Structure
 
 ```
@@ -242,7 +285,7 @@ To adapt for your environment:
 ├── site.yml                    # Master playbook
 ├── requirements.yml            # Ansible collection dependencies
 ├── inventory/
-│   ├── hosts.yml              # Node inventory
+│   ├── hosts.yml              # 12-node inventory (4 clusters, 4 DCs)
 │   └── group_vars/all/
 │       ├── main.yml           # Non-secret configuration
 │       ├── vault.yml          # Encrypted secrets (not in git)
@@ -250,11 +293,19 @@ To adapt for your environment:
 ├── playbooks/
 │   ├── provision.yml          # VM provisioning
 │   ├── install_rmq.yml        # RabbitMQ installation
-│   ├── cluster_rmq.yml        # Cluster formation
-│   ├── configure_latency.yml  # Network latency
-│   ├── configure_warm_standby.yml  # Federation setup
+│   ├── cluster_rmq.yml        # Cluster formation (4 clusters)
+│   ├── configure_latency.yml  # Network latency (metro + cross-region)
+│   ├── configure_warm_standby.yml  # Federation DR setup
 │   ├── health_check.yml       # Environment verification
+│   ├── install_perftest.yml   # Performance test tools
 │   └── destroy.yml            # Cleanup
+├── perf-tests/
+│   ├── README.md              # Performance testing guide
+│   ├── run-test.sh            # Test runner script
+│   ├── compare-results.sh     # Results comparison
+│   ├── scenarios/             # Test scenario definitions
+│   ├── results/               # Test output (git-ignored)
+│   └── tools/                 # Downloaded JARs (git-ignored)
 ├── templates/
 │   └── userdata.yaml.j2       # Cloud-init template
 └── docs/

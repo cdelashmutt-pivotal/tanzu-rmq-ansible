@@ -1,20 +1,24 @@
 ---
 # RabbitMQ Clustering Playbook
 #
-# Creates two separate clusters:
-# - Phoenix: Stretched cluster (nodes 01-03 across DC1 and DC2)
-# - Dallas: Normal cluster (nodes 04-06 in single DC)
+# Creates four separate clusters across two regions:
+#   Arizona (Primary):
+#     - AZ-Cluster-1: Stretched across Phoenix + Chandler (1+2 nodes)
+#     - AZ-Cluster-2: Stretched across Phoenix + Chandler (2+1 nodes)
+#   Texas (DR):
+#     - TX-Cluster-1: Stretched across Dallas1 + Dallas2 (1+2 nodes)
+#     - TX-Cluster-2: Stretched across Dallas1 + Dallas2 (2+1 nodes)
 #
+
+# ============================================
+# Phase 1: Configure /etc/hosts and sync Erlang cookies
+# ============================================
 - name: Configure RabbitMQ Clusters
   hosts: nodes
   become: true
   vars:
-    phoenix_seed: tanzu-node-01
-    dallas_seed: tanzu-node-04
+    global_seed: az-rmq-01
   tasks:
-    # ============================================
-    # Phase 1: Configure /etc/hosts for cluster communication
-    # ============================================
     - name: Add all cluster nodes to /etc/hosts
       ansible.builtin.lineinfile:
         path: /etc/hosts
@@ -23,53 +27,33 @@
         state: present
       loop: "{{ groups['nodes'] }}"
 
-    # ============================================
-    # Phase 2: Synchronize Erlang cookies within each cluster
-    # ============================================
-    - name: Get Erlang cookie from Phoenix seed node
+    - name: Get Erlang cookie from global seed node
       ansible.builtin.slurp:
         src: /var/lib/rabbitmq/.erlang.cookie
-      register: phoenix_cookie
-      delegate_to: "{{ phoenix_seed }}"
+      register: global_cookie
+      delegate_to: "{{ global_seed }}"
       run_once: true
-
-    - name: Get Erlang cookie from Dallas seed node
-      ansible.builtin.slurp:
-        src: /var/lib/rabbitmq/.erlang.cookie
-      register: dallas_cookie
-      delegate_to: "{{ dallas_seed }}"
-      run_once: true
-
-    - name: Set Phoenix cookie fact
-      ansible.builtin.set_fact:
-        cluster_cookie: "{{ hostvars[phoenix_seed]['phoenix_cookie']['content'] | b64decode }}"
-      when: inventory_hostname in groups['stretched_cluster']
-
-    - name: Set Dallas cookie fact
-      ansible.builtin.set_fact:
-        cluster_cookie: "{{ hostvars[dallas_seed]['dallas_cookie']['content'] | b64decode }}"
-      when: inventory_hostname in groups['normal_cluster']
 
     - name: Stop RabbitMQ service for cookie sync
       ansible.builtin.systemd:
         name: tanzu-rabbitmq-server
         state: stopped
-      when: inventory_hostname != phoenix_seed and inventory_hostname != dallas_seed
+      when: inventory_hostname != global_seed
 
     - name: Sync Erlang cookie on non-seed nodes
       ansible.builtin.copy:
-        content: "{{ cluster_cookie }}"
+        content: "{{ hostvars[global_seed]['global_cookie']['content'] | b64decode }}"
         dest: /var/lib/rabbitmq/.erlang.cookie
         owner: rabbitmq
         group: rabbitmq
         mode: '0400'
-      when: inventory_hostname != phoenix_seed and inventory_hostname != dallas_seed
+      when: inventory_hostname != global_seed
 
     - name: Start RabbitMQ service after cookie sync
       ansible.builtin.systemd:
         name: tanzu-rabbitmq-server
         state: started
-      when: inventory_hostname != phoenix_seed and inventory_hostname != dallas_seed
+      when: inventory_hostname != global_seed
 
     - name: Wait for RabbitMQ to be ready
       ansible.builtin.command: rabbitmqctl await_startup
@@ -80,14 +64,12 @@
       until: rmq_ready.rc == 0
 
 # ============================================
-# Phase 3: Form Phoenix cluster (stretched) - Serial execution
+# Phase 2: Form AZ-Cluster-1
 # ============================================
-- name: Join Phoenix cluster nodes
-  hosts: stretched_cluster
+- name: Join AZ-Cluster-1 nodes
+  hosts: az_cluster_1
   become: true
   serial: 1
-  vars:
-    phoenix_seed: tanzu-node-01
   tasks:
     - name: Check current cluster membership
       ansible.builtin.command: rabbitmqctl cluster_status --formatter json
@@ -98,14 +80,10 @@
       ansible.builtin.set_fact:
         running_nodes: "{{ (cluster_check.stdout | from_json).running_nodes | default([]) }}"
 
-    - name: Debug - show running nodes
-      ansible.builtin.debug:
-        msg: "Node {{ inventory_hostname }} sees running nodes: {{ running_nodes }}"
-
-    - name: Join Phoenix cluster
+    - name: Join AZ-Cluster-1
       when:
-        - inventory_hostname != phoenix_seed
-        - ("rabbit@" + phoenix_seed) not in running_nodes
+        - inventory_hostname != cluster_seed
+        - ("rabbit@" + cluster_seed) not in running_nodes
       block:
         - name: Stop RabbitMQ app
           ansible.builtin.command: rabbitmqctl stop_app
@@ -114,7 +92,7 @@
           ansible.builtin.command: rabbitmqctl reset
 
         - name: Join cluster
-          ansible.builtin.command: rabbitmqctl join_cluster rabbit@{{ phoenix_seed }}
+          ansible.builtin.command: rabbitmqctl join_cluster rabbit@{{ cluster_seed }}
 
         - name: Start RabbitMQ app
           ansible.builtin.command: rabbitmqctl start_app
@@ -127,14 +105,12 @@
           until: startup_wait.rc == 0
 
 # ============================================
-# Phase 4: Form Dallas cluster (normal) - Serial execution
+# Phase 3: Form AZ-Cluster-2
 # ============================================
-- name: Join Dallas cluster nodes
-  hosts: normal_cluster
+- name: Join AZ-Cluster-2 nodes
+  hosts: az_cluster_2
   become: true
   serial: 1
-  vars:
-    dallas_seed: tanzu-node-04
   tasks:
     - name: Check current cluster membership
       ansible.builtin.command: rabbitmqctl cluster_status --formatter json
@@ -145,14 +121,10 @@
       ansible.builtin.set_fact:
         running_nodes: "{{ (cluster_check.stdout | from_json).running_nodes | default([]) }}"
 
-    - name: Debug - show running nodes
-      ansible.builtin.debug:
-        msg: "Node {{ inventory_hostname }} sees running nodes: {{ running_nodes }}"
-
-    - name: Join Dallas cluster
+    - name: Join AZ-Cluster-2
       when:
-        - inventory_hostname != dallas_seed
-        - ("rabbit@" + dallas_seed) not in running_nodes
+        - inventory_hostname != cluster_seed
+        - ("rabbit@" + cluster_seed) not in running_nodes
       block:
         - name: Stop RabbitMQ app
           ansible.builtin.command: rabbitmqctl stop_app
@@ -161,7 +133,7 @@
           ansible.builtin.command: rabbitmqctl reset
 
         - name: Join cluster
-          ansible.builtin.command: rabbitmqctl join_cluster rabbit@{{ dallas_seed }}
+          ansible.builtin.command: rabbitmqctl join_cluster rabbit@{{ cluster_seed }}
 
         - name: Start RabbitMQ app
           ansible.builtin.command: rabbitmqctl start_app
@@ -174,23 +146,97 @@
           until: startup_wait.rc == 0
 
 # ============================================
-# Phase 5: Set cluster names and verify
+# Phase 4: Form TX-Cluster-1
+# ============================================
+- name: Join TX-Cluster-1 nodes
+  hosts: tx_cluster_1
+  become: true
+  serial: 1
+  tasks:
+    - name: Check current cluster membership
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: cluster_check
+      changed_when: false
+
+    - name: Parse running nodes from cluster status
+      ansible.builtin.set_fact:
+        running_nodes: "{{ (cluster_check.stdout | from_json).running_nodes | default([]) }}"
+
+    - name: Join TX-Cluster-1
+      when:
+        - inventory_hostname != cluster_seed
+        - ("rabbit@" + cluster_seed) not in running_nodes
+      block:
+        - name: Stop RabbitMQ app
+          ansible.builtin.command: rabbitmqctl stop_app
+
+        - name: Reset node
+          ansible.builtin.command: rabbitmqctl reset
+
+        - name: Join cluster
+          ansible.builtin.command: rabbitmqctl join_cluster rabbit@{{ cluster_seed }}
+
+        - name: Start RabbitMQ app
+          ansible.builtin.command: rabbitmqctl start_app
+
+        - name: Wait for node to be ready
+          ansible.builtin.command: rabbitmqctl await_startup
+          retries: 5
+          delay: 5
+          register: startup_wait
+          until: startup_wait.rc == 0
+
+# ============================================
+# Phase 5: Form TX-Cluster-2
+# ============================================
+- name: Join TX-Cluster-2 nodes
+  hosts: tx_cluster_2
+  become: true
+  serial: 1
+  tasks:
+    - name: Check current cluster membership
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: cluster_check
+      changed_when: false
+
+    - name: Parse running nodes from cluster status
+      ansible.builtin.set_fact:
+        running_nodes: "{{ (cluster_check.stdout | from_json).running_nodes | default([]) }}"
+
+    - name: Join TX-Cluster-2
+      when:
+        - inventory_hostname != cluster_seed
+        - ("rabbit@" + cluster_seed) not in running_nodes
+      block:
+        - name: Stop RabbitMQ app
+          ansible.builtin.command: rabbitmqctl stop_app
+
+        - name: Reset node
+          ansible.builtin.command: rabbitmqctl reset
+
+        - name: Join cluster
+          ansible.builtin.command: rabbitmqctl join_cluster rabbit@{{ cluster_seed }}
+
+        - name: Start RabbitMQ app
+          ansible.builtin.command: rabbitmqctl start_app
+
+        - name: Wait for node to be ready
+          ansible.builtin.command: rabbitmqctl await_startup
+          retries: 5
+          delay: 5
+          register: startup_wait
+          until: startup_wait.rc == 0
+
+# ============================================
+# Phase 6: Set cluster names and verify
 # ============================================
 - name: Finalize clusters
   hosts: nodes
   become: true
-  vars:
-    phoenix_seed: tanzu-node-01
-    dallas_seed: tanzu-node-04
   tasks:
-    - name: Set Phoenix cluster name
-      ansible.builtin.command: rabbitmqctl set_cluster_name phoenix
-      when: inventory_hostname == phoenix_seed
-      changed_when: true
-
-    - name: Set Dallas cluster name
-      ansible.builtin.command: rabbitmqctl set_cluster_name dallas
-      when: inventory_hostname == dallas_seed
+    - name: Set cluster name
+      ansible.builtin.command: rabbitmqctl set_cluster_name {{ rmq_cluster_name }}
+      when: inventory_hostname == cluster_seed
       changed_when: true
 
     - name: Get final cluster status

@@ -1,13 +1,26 @@
 ---
 # Network Latency Simulation using tc/netem
 #
-# Topology:
-# - Phoenix DC1 (nodes 01-02) ↔ Phoenix DC2 (node 03): metro WAN latency
-# - Phoenix cluster ↔ Dallas cluster: cross-country latency
+# Topology (2 regions, 4 datacenters):
+#   Arizona: Phoenix DC ↔ Chandler DC  (~3ms metro)
+#   Texas:   Dallas1 DC ↔ Dallas2 DC   (~3ms metro)
+#   Arizona ↔ Texas                     (~35ms cross-region)
+#
+# Each node gets:
+#   - No added latency to nodes in the same DC
+#   - Metro latency to nodes in the same region, different DC
+#   - Cross-region latency to nodes in the other region
 #
 - name: Configure Network Latency Simulation
   hosts: nodes
   become: true
+  vars:
+    # Map each DC to its partner DC within the same region
+    dc_peers:
+      phoenix_dc: chandler_dc
+      chandler_dc: phoenix_dc
+      dallas1_dc: dallas2_dc
+      dallas2_dc: dallas1_dc
   tasks:
     - name: Install iproute-tc package
       ansible.builtin.dnf:
@@ -28,52 +41,34 @@
         tc qdisc add dev {{ network.interface }} parent 1:2 handle 20:
         netem delay {{ latency.metro.delay_ms }}ms {{ latency.metro.jitter_ms }}ms distribution normal
 
-    - name: Add netem qdisc for cross-country latency (band 3)
+    - name: Add netem qdisc for cross-region latency (band 3)
       ansible.builtin.command: >
         tc qdisc add dev {{ network.interface }} parent 1:3 handle 30:
-        netem delay {{ latency.cross_country.delay_ms }}ms {{ latency.cross_country.jitter_ms }}ms distribution normal
+        netem delay {{ latency.cross_region.delay_ms }}ms {{ latency.cross_region.jitter_ms }}ms distribution normal
 
-    # Phoenix DC1 nodes: add metro latency to DC2, cross-country to Dallas
-    - name: "Phoenix DC1: Add metro latency filter to DC2"
-      ansible.builtin.command: >
-        tc filter add dev {{ network.interface }} parent 1:0 protocol ip prio 1
-        u32 match ip dst {{ hostvars['tanzu-node-03']['ansible_host'] }}/32
-        flowid 1:2
-      when: inventory_hostname in groups['phoenix_dc1']
+    # Determine this node's region and peer DC
+    - name: Set node region
+      ansible.builtin.set_fact:
+        my_region: "{{ 'arizona' if inventory_hostname in groups['arizona'] else 'texas' }}"
+        other_region: "{{ 'texas' if inventory_hostname in groups['arizona'] else 'arizona' }}"
+        peer_dc: "{{ dc_peers[dc_group] }}"
 
-    - name: "Phoenix DC1: Add cross-country latency filter to Dallas"
-      ansible.builtin.command: >
-        tc filter add dev {{ network.interface }} parent 1:0 protocol ip prio 2
-        u32 match ip dst {{ hostvars[item]['ansible_host'] }}/32
-        flowid 1:3
-      loop: "{{ groups['normal_cluster'] }}"
-      when: inventory_hostname in groups['phoenix_dc1']
-
-    # Phoenix DC2 node: add metro latency to DC1, cross-country to Dallas
-    - name: "Phoenix DC2: Add metro latency filter to DC1"
+    # Metro latency: same region, different DC
+    - name: Add metro latency filter to peer DC nodes
       ansible.builtin.command: >
         tc filter add dev {{ network.interface }} parent 1:0 protocol ip prio 1
         u32 match ip dst {{ hostvars[item]['ansible_host'] }}/32
         flowid 1:2
-      loop: "{{ groups['phoenix_dc1'] }}"
-      when: inventory_hostname in groups['phoenix_dc2']
+      loop: "{{ groups[peer_dc] }}"
+      when: item != inventory_hostname
 
-    - name: "Phoenix DC2: Add cross-country latency filter to Dallas"
+    # Cross-region latency: all nodes in the other region
+    - name: Add cross-region latency filter to remote region nodes
       ansible.builtin.command: >
         tc filter add dev {{ network.interface }} parent 1:0 protocol ip prio 2
         u32 match ip dst {{ hostvars[item]['ansible_host'] }}/32
         flowid 1:3
-      loop: "{{ groups['normal_cluster'] }}"
-      when: inventory_hostname in groups['phoenix_dc2']
-
-    # Dallas nodes: add cross-country latency to all Phoenix nodes
-    - name: "Dallas: Add cross-country latency filter to Phoenix"
-      ansible.builtin.command: >
-        tc filter add dev {{ network.interface }} parent 1:0 protocol ip prio 2
-        u32 match ip dst {{ hostvars[item]['ansible_host'] }}/32
-        flowid 1:3
-      loop: "{{ groups['stretched_cluster'] }}"
-      when: inventory_hostname in groups['normal_cluster']
+      loop: "{{ groups[other_region] }}"
 
     - name: Verify tc configuration
       ansible.builtin.command: tc qdisc show dev {{ network.interface }}

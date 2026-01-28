@@ -16,6 +16,10 @@ __pycache__/
 .venv/
 venv/
 
+# Performance test results and tools (downloaded JARs)
+perf-tests/results/*.txt
+perf-tests/tools/
+
 # IDE
 .idea/
 .vscode/
