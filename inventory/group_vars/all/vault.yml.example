@@ -1,0 +1,38 @@
+# Copy this file to vault.yml and encrypt with:
+#   cp vault.yml.example vault.yml
+#   ansible-vault encrypt vault.yml
+#
+# Or create encrypted file directly:
+#   ansible-vault create vault.yml
+
+# ===========================================
+# vCenter Credentials
+# ===========================================
+vcenter_host: "vcenter.example.com"
+vcenter_user: "administrator@vsphere.local"
+vcenter_pass: "your-vcenter-password"
+
+# ===========================================
+# Broadcom Tanzu RabbitMQ Repository Access
+# Get token from: https://support.broadcom.com
+# ===========================================
+broadcom_user: "your-email@example.com"
+broadcom_token: "your-api-token"
+
+# ===========================================
+# Red Hat Subscription (for RHEL repos)
+# ===========================================
+rh_username: "your-rh-username"
+rh_password: "your-rh-password"
+
+# ===========================================
+# VM Access Credentials
+# Password for the 'ansible' user on provisioned VMs
+# ===========================================
+ansible_ssh_pass: "secure-vm-password"
+
+# ===========================================
+# RabbitMQ Admin Password
+# Used for management UI and federation
+# ===========================================
+vault_rmq_admin_password: "secure-rmq-password"

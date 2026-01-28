@@ -1,0 +1,178 @@
+---
+# Tanzu RabbitMQ Warm Standby Configuration
+#
+# Configures Dallas cluster as a Warm Standby of Phoenix cluster
+# - Phoenix (upstream/active): Receives and processes messages
+# - Dallas (downstream/standby): Replicates from Phoenix, ready for failover
+#
+- name: Configure Warm Standby Replication
+  hosts: nodes
+  become: true
+  tasks:
+    # ============================================
+    # Phase 1: Enable required plugins on all nodes
+    # ============================================
+    - name: Enable management plugin
+      ansible.builtin.command: rabbitmq-plugins enable rabbitmq_management
+      register: mgmt_plugin
+      changed_when: "'already enabled' not in mgmt_plugin.stdout"
+
+    - name: Enable federation plugin
+      ansible.builtin.command: rabbitmq-plugins enable rabbitmq_federation rabbitmq_federation_management
+      register: fed_plugin
+      changed_when: "'already enabled' not in fed_plugin.stdout"
+
+    - name: Enable standby replication plugin
+      ansible.builtin.command: rabbitmq-plugins enable rabbitmq_standby_replication
+      register: standby_plugin
+      changed_when: "'already enabled' not in standby_plugin.stdout"
+      ignore_errors: true  # Plugin may not exist in all versions
+
+# ============================================
+# Phase 2: Configure admin user on Phoenix (upstream)
+# ============================================
+- name: Configure Phoenix upstream cluster
+  hosts: "{{ groups['stretched_cluster'][0] }}"
+  become: true
+  vars:
+    rmq_admin_password: "{{ vault_rmq_admin_password | default('changeme') }}"
+  tasks:
+    - name: Create admin user
+      ansible.builtin.command: >
+        rabbitmqctl add_user {{ rabbitmq.admin_user }} {{ rmq_admin_password }}
+      register: add_user
+      changed_when: add_user.rc == 0
+      failed_when: add_user.rc != 0 and 'already exists' not in add_user.stderr
+
+    - name: Ensure admin password is set
+      ansible.builtin.command: >
+        rabbitmqctl change_password {{ rabbitmq.admin_user }} {{ rmq_admin_password }}
+      changed_when: true
+
+    - name: Set admin user tags
+      ansible.builtin.command: rabbitmqctl set_user_tags {{ rabbitmq.admin_user }} administrator
+      changed_when: true
+
+    - name: Set admin permissions
+      ansible.builtin.command: >
+        rabbitmqctl set_permissions -p / {{ rabbitmq.admin_user }} ".*" ".*" ".*"
+      changed_when: true
+
+    - name: Create replication user for standby
+      ansible.builtin.command: >
+        rabbitmqctl add_user {{ rabbitmq.replication_user }} {{ rmq_admin_password }}
+      register: add_repl_user
+      changed_when: add_repl_user.rc == 0
+      failed_when: add_repl_user.rc != 0 and 'already exists' not in add_repl_user.stderr
+
+    - name: Ensure replication password is set
+      ansible.builtin.command: >
+        rabbitmqctl change_password {{ rabbitmq.replication_user }} {{ rmq_admin_password }}
+      changed_when: true
+
+    - name: Set replication user tags
+      ansible.builtin.command: rabbitmqctl set_user_tags {{ rabbitmq.replication_user }} administrator
+      changed_when: true
+
+    - name: Set replication user permissions
+      ansible.builtin.command: >
+        rabbitmqctl set_permissions -p / {{ rabbitmq.replication_user }} ".*" ".*" ".*"
+      changed_when: true
+
+# ============================================
+# Phase 3: Configure Dallas as standby (downstream)
+# ============================================
+- name: Configure Dallas standby cluster
+  hosts: "{{ groups['normal_cluster'][0] }}"
+  become: true
+  vars:
+    upstream_host: "{{ hostvars[groups['stretched_cluster'][0]]['ansible_host'] }}"
+    rmq_admin_password: "{{ vault_rmq_admin_password | default('changeme') }}"
+  tasks:
+    - name: Create admin user on Dallas
+      ansible.builtin.command: >
+        rabbitmqctl add_user {{ rabbitmq.admin_user }} {{ rmq_admin_password }}
+      register: add_user_dallas
+      changed_when: add_user_dallas.rc == 0
+      failed_when: add_user_dallas.rc != 0 and 'already exists' not in add_user_dallas.stderr
+
+    - name: Ensure admin password is set on Dallas
+      ansible.builtin.command: >
+        rabbitmqctl change_password {{ rabbitmq.admin_user }} {{ rmq_admin_password }}
+      changed_when: true
+
+    - name: Set admin user tags on Dallas
+      ansible.builtin.command: rabbitmqctl set_user_tags {{ rabbitmq.admin_user }} administrator
+      changed_when: true
+
+    - name: Set admin permissions on Dallas
+      ansible.builtin.command: >
+        rabbitmqctl set_permissions -p / {{ rabbitmq.admin_user }} ".*" ".*" ".*"
+      changed_when: true
+
+    - name: Configure federation upstream pointing to Phoenix
+      ansible.builtin.command: >
+        rabbitmqctl set_parameter federation-upstream phoenix-upstream
+        '{"uri":"amqp://{{ rabbitmq.replication_user }}:{{ rmq_admin_password }}@{{ upstream_host }}:{{ rabbitmq.amqp_port }}","expires":3600000}'
+      changed_when: true
+
+    - name: Create federation policy for all exchanges
+      ansible.builtin.command: >
+        rabbitmqctl set_policy --apply-to exchanges federate-exchanges
+        "^(?!amq\.).*" '{"federation-upstream-set":"all"}'
+      changed_when: true
+
+    - name: Create federation policy for all queues
+      ansible.builtin.command: >
+        rabbitmqctl set_policy --apply-to queues federate-queues
+        "^(?!amq\.).*" '{"federation-upstream-set":"all"}'
+      changed_when: true
+
+# ============================================
+# Phase 4: Verify replication status
+# ============================================
+- name: Verify Warm Standby Configuration
+  hosts: "{{ groups['normal_cluster'][0] }}"
+  become: true
+  tasks:
+    - name: Check federation status
+      ansible.builtin.command: rabbitmqctl eval 'rabbit_federation_status:status().'
+      register: federation_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display federation status
+      ansible.builtin.debug:
+        msg: "{{ federation_status.stdout_lines | default(['Federation not yet active']) }}"
+
+    - name: List federation parameters
+      ansible.builtin.command: rabbitmqctl list_parameters -p /
+      register: fed_params
+      changed_when: false
+
+    - name: Display federation parameters
+      ansible.builtin.debug:
+        msg: "{{ fed_params.stdout_lines }}"
+
+- name: Display Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Print configuration summary
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "Warm Standby Configuration Complete"
+          - "============================================"
+          - "Upstream (Active):  Phoenix cluster ({{ groups['stretched_cluster'] | join(', ') }})"
+          - "Downstream (Standby): Dallas cluster ({{ groups['normal_cluster'] | join(', ') }})"
+          - ""
+          - "Management UI:"
+          - "  Phoenix: http://{{ hostvars[groups['stretched_cluster'][0]]['ansible_host'] }}:{{ rabbitmq.management_port }}"
+          - "  Dallas:  http://{{ hostvars[groups['normal_cluster'][0]]['ansible_host'] }}:{{ rabbitmq.management_port }}"
+          - ""
+          - "Credentials: {{ rabbitmq.admin_user }} / {{ vault_rmq_admin_password | default('changeme') }}"
+          - ""
+          - "Note: Create exchanges/queues on Phoenix and they will"
+          - "      be federated to Dallas automatically."
+          - "============================================"

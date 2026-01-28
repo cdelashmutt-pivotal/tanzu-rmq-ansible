@@ -1,4 +1,22 @@
+# Ansible
 *.retry
 *.log
 .vault_pass
+
+# Secrets (not committed - use vault.yml.example as template)
 inventory/group_vars/all/vault.yml
+
+# Packer
+docs/packer/variables.pkrvars.hcl
+docs/packer/packer_cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp

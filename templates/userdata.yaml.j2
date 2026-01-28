@@ -1,0 +1,33 @@
+#cloud-config
+hostname: {{ item }}
+fqdn: {{ item }}.{{ network.domain }}
+
+# Enable SSH password authentication
+ssh_pwauth: true
+
+# Setup the user so Ansible can log in immediately
+users:
+  - name: ansible
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: {{ ansible_ssh_pass | password_hash('sha512') }}
+
+# Configure static IP and register with RHSM
+runcmd:
+  - |
+    # Delete the DHCP connection to prevent conflicts
+    nmcli connection delete "System {{ network.interface }}" 2>/dev/null || true
+    # Create new static connection
+    nmcli connection add \
+      con-name "static-{{ network.interface }}" \
+      type ethernet \
+      ifname {{ network.interface }} \
+      ipv4.method manual \
+      ipv4.addresses "{{ hostvars[item]['ansible_host'] }}/24" \
+      ipv4.gateway "{{ network.gateway }}" \
+      ipv4.dns "{{ network.dns_servers | join(',') }}" \
+      autoconnect yes
+    # Bring it up
+    nmcli connection up "static-{{ network.interface }}"
+  - subscription-manager register --username="{{ rh_username }}" --password="{{ rh_password }}" || true

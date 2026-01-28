@@ -1,0 +1,115 @@
+---
+# Health check for RabbitMQ clusters
+#
+# Usage:
+#   ansible-playbook playbooks/health_check.yml
+#
+- name: RabbitMQ Cluster Health Check
+  hosts: nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check RabbitMQ service status
+      ansible.builtin.systemd:
+        name: tanzu-rabbitmq-server
+      register: rmq_service
+
+    - name: Verify RabbitMQ is running
+      ansible.builtin.assert:
+        that:
+          - rmq_service.status.ActiveState == "active"
+        fail_msg: "RabbitMQ is not running on {{ inventory_hostname }}"
+        success_msg: "RabbitMQ is running"
+
+    - name: Get cluster status
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: cluster_status
+      changed_when: false
+
+    - name: Parse cluster info
+      ansible.builtin.set_fact:
+        cluster_info: "{{ cluster_status.stdout | from_json }}"
+
+    - name: Display cluster membership
+      ansible.builtin.debug:
+        msg: |
+          Node: {{ inventory_hostname }}
+          Cluster: {{ cluster_info.cluster_name | default('unknown') }}
+          Running nodes: {{ cluster_info.running_nodes | join(', ') }}
+          Alarms: {{ cluster_info.alarms | default([]) | length }}
+
+    - name: Check for alarms
+      ansible.builtin.assert:
+        that:
+          - (cluster_info.alarms | default([]) | length) == 0
+        fail_msg: "ALARM: {{ cluster_info.alarms }}"
+        success_msg: "No alarms"
+
+    - name: Check for network partitions
+      ansible.builtin.assert:
+        that:
+          - (cluster_info.partitions | default([]) | length) == 0
+        fail_msg: "NETWORK PARTITION DETECTED: {{ cluster_info.partitions }}"
+        success_msg: "No network partitions"
+
+- name: Check Phoenix Cluster
+  hosts: "{{ groups['stretched_cluster'][0] }}"
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify Phoenix cluster size
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: phoenix_status
+      changed_when: false
+
+    - name: Assert Phoenix has 3 nodes
+      ansible.builtin.assert:
+        that:
+          - (phoenix_status.stdout | from_json).running_nodes | length == 3
+        fail_msg: "Phoenix cluster should have 3 nodes, found {{ (phoenix_status.stdout | from_json).running_nodes | length }}"
+        success_msg: "Phoenix cluster has 3 healthy nodes"
+
+- name: Check Dallas Cluster
+  hosts: "{{ groups['normal_cluster'][0] }}"
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Verify Dallas cluster size
+      ansible.builtin.command: rabbitmqctl cluster_status --formatter json
+      register: dallas_status
+      changed_when: false
+
+    - name: Assert Dallas has 3 nodes
+      ansible.builtin.assert:
+        that:
+          - (dallas_status.stdout | from_json).running_nodes | length == 3
+        fail_msg: "Dallas cluster should have 3 nodes, found {{ (dallas_status.stdout | from_json).running_nodes | length }}"
+        success_msg: "Dallas cluster has 3 healthy nodes"
+
+    - name: Check federation parameters
+      ansible.builtin.command: rabbitmqctl list_parameters -p /
+      register: fed_params
+      changed_when: false
+
+    - name: Verify federation is configured
+      ansible.builtin.assert:
+        that:
+          - "'phoenix-upstream' in fed_params.stdout"
+        fail_msg: "Federation upstream not configured"
+        success_msg: "Federation upstream configured"
+
+- name: Health Check Summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Print summary
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "Health Check Complete"
+          - "============================================"
+          - "Phoenix Cluster: {{ groups['stretched_cluster'] | length }} nodes"
+          - "Dallas Cluster:  {{ groups['normal_cluster'] | length }} nodes"
+          - ""
+          - "All checks passed!"
+          - "============================================"

@@ -1,0 +1,64 @@
+---
+- name: Install Tanzu RabbitMQ
+  hosts: nodes
+  become: true
+  tasks:
+    # Disable firewall for lab environment
+    # For production, open ports 4369, 5672, 15672, 25672 instead
+    - name: Disable firewalld for lab
+      ansible.builtin.systemd:
+        name: firewalld
+        state: stopped
+        enabled: no
+
+    - name: Import RabbitMQ GPG Key
+      ansible.builtin.rpm_key:
+        state: present
+        key: https://github.com/rabbitmq/signing-keys/releases/download/3.0/rabbitmq-release-signing-key.asc
+
+    - name: Import Cloudsmith Erlang GPG Key
+      ansible.builtin.rpm_key:
+        state: present
+        key: https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key
+
+    - name: Add RabbitMQ Erlang Repository
+      ansible.builtin.yum_repository:
+        name: rabbitmq-erlang
+        description: RabbitMQ Erlang Repo
+        baseurl: https://yum1.rabbitmq.com/erlang/el/9/$basearch
+        enabled: yes
+        gpgcheck: yes
+        gpgkey: https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key
+
+    - name: Add Tanzu RabbitMQ Repository
+      ansible.builtin.yum_repository:
+        name: tanzu-rabbitmq
+        description: Broadcom Tanzu RabbitMQ Repo
+        # We must URL-encode the email address for the repo URL
+        baseurl: "https://{{ broadcom_user | urlencode }}:{{ broadcom_token }}@packages.broadcom.com/artifactory/rabbitmq-rpm/"
+        enabled: yes
+        gpgcheck: no
+        repo_gpgcheck: no
+
+    - name: Install Erlang and Tanzu RabbitMQ Server
+      ansible.builtin.dnf:
+        name:
+          - erlang
+          - tanzu-rabbitmq-server
+        state: present
+        update_cache: yes
+
+    - name: Enable and Start RabbitMQ Service
+      ansible.builtin.systemd:
+        name: tanzu-rabbitmq-server
+        state: started
+        enabled: yes
+
+    - name: Check RabbitMQ Status
+      ansible.builtin.command: rabbitmqctl status
+      register: rmq_status
+      changed_when: false
+
+    - name: Print Status
+      ansible.builtin.debug:
+        var: rmq_status.stdout_lines[0]

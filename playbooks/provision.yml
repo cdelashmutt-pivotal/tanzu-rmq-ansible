@@ -1,0 +1,65 @@
+---
+- name: Provision Tanzu RMQ Nodes
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tasks:
+    # Phase 1: Clone VM but don't power on yet
+    - name: Clone VM from template
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_host }}"
+        username: "{{ vcenter_user }}"
+        password: "{{ vcenter_pass }}"
+        validate_certs: false
+        datacenter: "{{ vsphere.datacenter }}"
+        cluster: "{{ vsphere.cluster }}"
+        folder: "{{ vsphere.folder }}"
+        datastore: "{{ vsphere.datastore }}"
+        template: "{{ vsphere.template }}"
+        name: "{{ item }}"
+        state: present
+        networks:
+          - name: "{{ vsphere.network }}"
+            start_connected: true
+            device_type: vmxnet3
+        vapp_properties:
+          - id: "user-data"
+            value: "{{ lookup('template', '../templates/userdata.yaml.j2') | b64encode }}"
+      loop: "{{ groups['nodes'] }}"
+
+    # Phase 2: Ensure NIC is configured to connect at power on
+    - name: Configure NIC connection state
+      community.vmware.vmware_guest_network:
+        hostname: "{{ vcenter_host }}"
+        username: "{{ vcenter_user }}"
+        password: "{{ vcenter_pass }}"
+        validate_certs: false
+        name: "{{ item }}"
+        datacenter: "{{ vsphere.datacenter }}"
+        label: "Network adapter 1"
+        network_name: "{{ vsphere.network }}"
+        connected: true
+        start_connected: true
+        state: present
+      loop: "{{ groups['nodes'] }}"
+
+    # Phase 3: Power on the VMs
+    - name: Power on VMs
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_host }}"
+        username: "{{ vcenter_user }}"
+        password: "{{ vcenter_pass }}"
+        validate_certs: false
+        datacenter: "{{ vsphere.datacenter }}"
+        name: "{{ item }}"
+        state: poweredon
+      loop: "{{ groups['nodes'] }}"
+
+    - name: Wait for SSH
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item]['ansible_host'] }}"
+        port: 22
+        delay: 20
+        timeout: 400
+        state: started
+      loop: "{{ groups['nodes'] }}"

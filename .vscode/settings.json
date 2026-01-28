@@ -1,1 +1,4 @@
-{}
+{
+  "python-envs.pythonProjects": [],
+  "ansible.python.interpreterPath": "/Users/cd007405/git/tanzu-rmq-ansible/.venv/bin/python"
+}

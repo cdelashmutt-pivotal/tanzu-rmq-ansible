@@ -1,0 +1,46 @@
+# Environment Configuration
+# Non-secret variables for the lab environment
+
+# ===========================================
+# vSphere Infrastructure
+# ===========================================
+vsphere:
+  datacenter: "tanzu-datacenter"
+  cluster: "tanzu-cluster"
+  datastore: "vsanDatastore"
+  folder: "rabbitmq-lab"
+  template: "rhel9-6-template"
+  network: "dvpg-mgmt-network"
+
+# ===========================================
+# Network Configuration
+# ===========================================
+network:
+  interface: "ens33"
+  gateway: "192.168.20.1"
+  dns_servers:
+    - "192.168.20.1"
+    - "8.8.8.8"
+  domain: "tanzu.lab"
+
+# ===========================================
+# Latency Simulation (tc/netem)
+# ===========================================
+latency:
+  metro:
+    delay_ms: 3
+    jitter_ms: 1
+  cross_country:
+    delay_ms: 35
+    jitter_ms: 5
+
+# ===========================================
+# RabbitMQ Configuration
+# ===========================================
+rabbitmq:
+  admin_user: "admin"
+  replication_user: "replication"
+  amqp_port: 5672
+  management_port: 15672
+  clustering_port: 25672
+  epmd_port: 4369
