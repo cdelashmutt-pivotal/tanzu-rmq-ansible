@@ -2,14 +2,17 @@
 
 Automated deployment of a Tanzu RabbitMQ multi-region lab environment with:
 
-- **4 Stretched Clusters** across 2 regions (Arizona + Texas), each with 3 nodes spanning 2 datacenters
+- **3 Clusters** across 2 regions (Arizona + Texas), each with 3 nodes spanning 2 datacenters
 - **Network Latency Simulation**: Metro (~3ms) within regions, cross-region (~35ms) between Arizona and Texas
-- **Warm Standby DR**: AZ-Cluster-1 federates to TX-Cluster-1 for disaster recovery
-- **12 Nodes Total**: 6 in Arizona (Phoenix + Chandler DCs), 6 in Texas (Dallas1 + Dallas2 DCs)
+- **Warm Standby DR**: AZ-Cluster-1 replicates to AZ-Cluster-2 (regional standby) and TX-Cluster-1 (cross-region DR)
+- **9 Nodes Total**: 6 in Arizona (Phoenix + Chandler DCs), 3 in Texas (Dallas DCs)
 
 ## Architecture
 
 ```mermaid
+---
+title: Cluster Topology
+---
 flowchart TD
     subgraph az_region["AZ Region"]
         subgraph phx_dc["PHX DC"]
@@ -24,20 +27,29 @@ flowchart TD
         azrmq04 ---- azrmq05
     end
     subgraph tx_region["TX Region"]
-        subgraph dal1_dc["DAL1 DC"]
-            txrmq01["TX RMQ 01"] --- txrmq02["AZ RMQ 02"]
-            txrmq04["TX RMQ 04"]
-        end
-        subgraph dal2_dc["DAL2 DC"]
+        subgraph dal_dc["DAL DC"]
+            direction LR
+            txrmq01["TX RMQ 01"] --- txrmq02["TX RMQ 02"] --- 
             txrmq03["TX RMQ 03"]
-            txrmq05["TX RMQ 05"] --- txrmq06["TX RMQ 06"]
         end
-        txrmq02 ---- txrmq03
-        txrmq04 ---- txrmq05
     end
-    az_region -- Warm Standby Replication (AZ RMQ 04 -> TX RMQ 01) 35ms+-5ms --- tx_region
+    az_region --- tx_region
 ```
-
+```mermaid
+---
+title: Replication
+---
+flowchart LR
+    subgraph az_region["AZ Region"]
+        direction LR
+        az-cluster-1 -- Warm Standby Replication 3ms+-2ms --> az-cluster-2
+    end
+    subgraph tx_region["TX Region"]
+        direction LR
+        tx-cluster-1
+    end
+    az-cluster-2 -- Warm Standby Replication 35ms+-5ms --> tx-cluster-1
+```
 ## Prerequisites
 
 - Python 3.9+ with Ansible
@@ -98,9 +110,9 @@ ansible-playbook site.yml
 | `site.yml` | Master playbook - runs everything |
 | `playbooks/provision.yml` | Create VMs in vSphere |
 | `playbooks/install_rmq.yml` | Install Tanzu RabbitMQ |
-| `playbooks/cluster_rmq.yml` | Form 4 RabbitMQ clusters |
+| `playbooks/cluster_rmq.yml` | Form 3 RabbitMQ clusters |
 | `playbooks/configure_latency.yml` | Setup network latency simulation |
-| `playbooks/configure_warm_standby.yml` | Configure federation/warm standby DR |
+| `playbooks/configure_warm_standby.yml` | Configure warm standby replication DR |
 | `playbooks/health_check.yml` | Verify cluster health |
 | `playbooks/install_perftest.yml` | Install performance test tools |
 | `playbooks/destroy.yml` | Delete all lab VMs |
@@ -185,11 +197,11 @@ nodes
 │       ├── az-rmq-05 (Phoenix)
 │       └── az-rmq-06 (Chandler)
 ├── texas (DR Region)
-│   ├── tx_cluster_1 (1 Dallas1 + 2 Dallas2)
+│   └── tx_cluster_1 (1 Dallas1 + 2 Dallas2)
 │   │   ├── tx-rmq-01 (Dallas1, seed)
 │   │   ├── tx-rmq-02 (Dallas2)
 │   │   └── tx-rmq-03 (Dallas2)
-│   └── tx_cluster_2 (2 Dallas1 + 1 Dallas2)
+│   └── tx_cluster_1 (2 Dallas1 + 1 Dallas2)
 │       ├── tx-rmq-04 (Dallas1, seed)
 │       ├── tx-rmq-05 (Dallas1)
 │       └── tx-rmq-06 (Dallas2)
@@ -200,13 +212,13 @@ nodes
     └── dallas2_dc
 ```
 
-## Testing Federation
+## Testing Warm Standby Replication
 
 1. Log into AZ-Cluster-1 management UI (http://192.168.20.200:15672)
-2. Create an exchange or queue
-3. Log into TX-Cluster-1 management UI (http://192.168.20.206:15672)
-4. Verify the exchange/queue appears via federation
-5. Check **Admin → Federation Status** for link health
+2. Create a queue and publish messages
+3. Log into AZ-Cluster-2 (http://192.168.20.203:15672),  TX-Cluster-1 (http://192.168.20.206:15672), or TX-Cluster-2 (http://192.168.20.209:15672)
+4. Verify the queue and messages appear via warm standby replication
+5. Check replication status: `rabbitmqctl standby_replication_status`
 
 ## Troubleshooting
 
@@ -220,7 +232,6 @@ ansible-playbook playbooks/health_check.yml
 ansible az-rmq-01 -m command -a "rabbitmqctl cluster_status"
 ansible az-rmq-04 -m command -a "rabbitmqctl cluster_status"
 ansible tx-rmq-01 -m command -a "rabbitmqctl cluster_status"
-ansible tx-rmq-04 -m command -a "rabbitmqctl cluster_status"
 ```
 
 ### Verify latency simulation
@@ -235,7 +246,7 @@ ansible az-rmq-01 -m command -a "ping -c 3 tx-rmq-01"
 ### Reset admin password
 ```bash
 # Reset on all cluster seeds
-ansible az-rmq-01,az-rmq-04,tx-rmq-01,tx-rmq-04 -m command -a "rabbitmqctl change_password admin newpassword"
+ansible az-rmq-01,az-rmq-04,tx-rmq-01 -m command -a "rabbitmqctl change_password admin newpassword"
 ```
 
 ### Re-run specific stage
@@ -272,6 +283,10 @@ To adapt for your environment:
 4. **Different cluster sizes**: Modify inventory groups and adjust playbooks
 5. **Skip latency simulation**: Remove `configure_latency.yml` from `site.yml`
 
+## Production Sizing
+
+For guidance on running warm standby replication at high message rates (trading-adjacent and financial services workloads), see [High-Throughput Warm Standby Sizing Guide](docs/high-throughput-sizing.md). Covers fan-out architecture constraints, disk/network/WAN sizing, replication lag and RPO analysis, and operational procedures for multi-downstream failover.
+
 ## Future Enhancements
 
 - **Shovel plugin**: Add shovel support alongside federation for fine-grained, per-queue replication between clusters. Compare shovel vs federation for DR use cases.
@@ -285,7 +300,7 @@ To adapt for your environment:
 ├── site.yml                    # Master playbook
 ├── requirements.yml            # Ansible collection dependencies
 ├── inventory/
-│   ├── hosts.yml              # 12-node inventory (4 clusters, 4 DCs)
+│   ├── hosts.yml              # 9-node inventory (3 clusters, 4 DCs)
 │   └── group_vars/all/
 │       ├── main.yml           # Non-secret configuration
 │       ├── vault.yml          # Encrypted secrets (not in git)
@@ -293,9 +308,9 @@ To adapt for your environment:
 ├── playbooks/
 │   ├── provision.yml          # VM provisioning
 │   ├── install_rmq.yml        # RabbitMQ installation
-│   ├── cluster_rmq.yml        # Cluster formation (4 clusters)
+│   ├── cluster_rmq.yml        # Cluster formation (3 clusters)
 │   ├── configure_latency.yml  # Network latency (metro + cross-region)
-│   ├── configure_warm_standby.yml  # Federation DR setup
+│   ├── configure_warm_standby.yml  # Warm standby replication DR
 │   ├── health_check.yml       # Environment verification
 │   ├── install_perftest.yml   # Performance test tools
 │   └── destroy.yml            # Cleanup

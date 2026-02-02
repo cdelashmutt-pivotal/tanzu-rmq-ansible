@@ -4,7 +4,7 @@
   gather_facts: false
   become: false
   tasks:
-    # Phase 1: Clone VM but don't power on yet
+    # Phase 1: Clone VM from template
     - name: Clone VM from template
       community.vmware.vmware_guest:
         hostname: "{{ vcenter_host }}"
@@ -18,8 +18,11 @@
         template: "{{ vsphere.template }}"
         name: "{{ item }}"
         state: present
-        linked_clone: "{{ vsphere.snapshot is defined }}"
-        snapshot_src: "{{ vsphere.snapshot | default(omit) }}"
+        hardware:
+          num_cpus: "{{ vm.cpu }}"
+          memory_mb: "{{ vm.memory_mb }}"
+        disk:
+          - size_gb: "{{ vm.disk_gb }}"
         networks:
           - name: "{{ vsphere.network }}"
             start_connected: true

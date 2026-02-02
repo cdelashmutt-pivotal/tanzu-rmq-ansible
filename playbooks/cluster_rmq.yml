@@ -1,7 +1,7 @@
 ---
 # RabbitMQ Clustering Playbook
 #
-# Creates four separate clusters across two regions:
+# Creates three separate clusters across two regions:
 #   Arizona (Primary):
 #     - AZ-Cluster-1: Stretched across Phoenix + Chandler (1+2 nodes)
 #     - AZ-Cluster-2: Stretched across Phoenix + Chandler (2+1 nodes)
@@ -34,11 +34,20 @@
       delegate_to: "{{ global_seed }}"
       run_once: true
 
+    - name: Read local Erlang cookie
+      ansible.builtin.slurp:
+        src: /var/lib/rabbitmq/.erlang.cookie
+      register: local_cookie
+
+    - name: Check if cookie needs syncing
+      ansible.builtin.set_fact:
+        cookie_needs_sync: "{{ (inventory_hostname != global_seed) and (local_cookie.content != global_cookie.content) }}"
+
     - name: Stop RabbitMQ service for cookie sync
       ansible.builtin.systemd:
         name: tanzu-rabbitmq-server
         state: stopped
-      when: inventory_hostname != global_seed
+      when: cookie_needs_sync | bool
 
     - name: Sync Erlang cookie on non-seed nodes
       ansible.builtin.copy:
@@ -47,13 +56,13 @@
         owner: rabbitmq
         group: rabbitmq
         mode: '0400'
-      when: inventory_hostname != global_seed
+      when: cookie_needs_sync | bool
 
     - name: Start RabbitMQ service after cookie sync
       ansible.builtin.systemd:
         name: tanzu-rabbitmq-server
         state: started
-      when: inventory_hostname != global_seed
+      when: cookie_needs_sync | bool
 
     - name: Wait for RabbitMQ to be ready
       ansible.builtin.command: rabbitmqctl await_startup
@@ -149,7 +158,7 @@
 # Phase 4: Form TX-Cluster-1
 # ============================================
 - name: Join TX-Cluster-1 nodes
-  hosts: tx_cluster_1
+  hosts: "{{ groups['tx_cluster_1'] | default([]) | intersect(groups['nodes'] | default([])) }}"
   become: true
   serial: 1
   tasks:
@@ -190,7 +199,7 @@
 # Phase 5: Form TX-Cluster-2
 # ============================================
 - name: Join TX-Cluster-2 nodes
-  hosts: tx_cluster_2
+  hosts: "{{ groups['tx_cluster_2'] | default([]) | intersect(groups['nodes'] | default([])) }}"
   become: true
   serial: 1
   tasks:

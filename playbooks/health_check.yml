@@ -103,17 +103,15 @@
         fail_msg: "TX-Cluster-1 should have 3 nodes, found {{ (tx1_status.stdout | from_json).running_nodes | length }}"
         success_msg: "TX-Cluster-1 has 3 healthy nodes"
 
-    - name: Check federation parameters
-      ansible.builtin.command: rabbitmqctl list_parameters -p /
-      register: fed_params
+    - name: Check standby replication status
+      ansible.builtin.command: rabbitmqctl standby_replication_status
+      register: replication_status
       changed_when: false
+      ignore_errors: true
 
-    - name: Verify federation is configured
-      ansible.builtin.assert:
-        that:
-          - "'az-cluster-1-upstream' in fed_params.stdout"
-        fail_msg: "Federation upstream not configured"
-        success_msg: "Federation upstream configured"
+    - name: Display replication status
+      ansible.builtin.debug:
+        msg: "{{ replication_status.stdout_lines | default(['Replication not configured']) }}"
 
 - name: Check TX-Cluster-2
   hosts: "{{ groups['tx_cluster_2'][0] }}"
@@ -132,6 +130,16 @@
         fail_msg: "TX-Cluster-2 should have 3 nodes, found {{ (tx2_status.stdout | from_json).running_nodes | length }}"
         success_msg: "TX-Cluster-2 has 3 healthy nodes"
 
+    - name: Check standby replication status
+      ansible.builtin.command: rabbitmqctl standby_replication_status
+      register: replication_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display replication status
+      ansible.builtin.debug:
+        msg: "{{ replication_status.stdout_lines | default(['Replication not configured']) }}"
+
 - name: Health Check Summary
   hosts: localhost
   gather_facts: false
@@ -146,7 +154,7 @@
           - "AZ-Cluster-2: {{ groups['az_cluster_2'] | length }} nodes"
           - "TX-Cluster-1: {{ groups['tx_cluster_1'] | length }} nodes"
           - "TX-Cluster-2: {{ groups['tx_cluster_2'] | length }} nodes"
-          - "Federation:   AZ-Cluster-1 → TX-Cluster-1"
+          - "Warm Standby: AZ-Cluster-1 → AZ-Cluster-2, TX-Cluster-1, TX-Cluster-2"
           - ""
           - "All checks passed!"
           - "============================================"

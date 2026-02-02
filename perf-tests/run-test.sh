@@ -123,12 +123,13 @@ if [[ "$TEST_TYPE" == "stream" ]]; then
     # Stream perf test
     CMD=("$TOOLS_DIR/stream-perf-test")
     CMD+=(--uris "rabbitmq-stream://${USER}:${PASSWORD}@${HOST}:5552")
+    CMD+=(--delete-streams)
     [[ -n "$PUBLISHERS" ]] && CMD+=(--producers "$PUBLISHERS")
     [[ -n "$CONSUMERS" ]] && CMD+=(--consumers "$CONSUMERS")
     [[ -n "$MESSAGE_SIZE" ]] && CMD+=(--size "$MESSAGE_SIZE")
     [[ -n "$DURATION" ]] && CMD+=(--time "$DURATION")
     [[ -n "$PUB_RATE" && "$PUB_RATE" != "0" ]] && CMD+=(--rate "$PUB_RATE")
-    [[ -n "$STREAM_NAME" ]] && CMD+=(--stream "$STREAM_NAME")
+    [[ -n "$STREAM_NAME" ]] && CMD+=(--streams "$STREAM_NAME")
     [[ -n "$OFFSET" ]] && CMD+=(--offset "$OFFSET")
 else
     # AMQP perf test

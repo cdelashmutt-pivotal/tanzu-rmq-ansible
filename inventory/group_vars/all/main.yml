@@ -10,8 +10,11 @@ vsphere:
   datastore: "vsanDatastore"
   folder: "rabbitmq-lab"
   template: "rhel9-6-template"
-  snapshot: "linked-clone-base"  # Set to use linked clones for faster provisioning
   network: "dvpg-mgmt-network"
+
+# SSH public key for passwordless access to provisioned nodes (optional)
+# Uncomment and set to inject your key during VM provisioning via cloud-init
+ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFhHuNyP6iMEsJiJm8v1cgYs1rXdDrSdGQZn2utFJysM shepherdkey"
 
 # ===========================================
 # Network Configuration
@@ -34,6 +37,14 @@ latency:
   cross_region:
     delay_ms: 35
     jitter_ms: 5
+
+# ===========================================
+# VM Hardware
+# ===========================================
+vm:
+  cpu: 2
+  memory_mb: 16384
+  disk_gb: 100
 
 # ===========================================
 # RabbitMQ Configuration

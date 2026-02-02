@@ -12,6 +12,10 @@ users:
     shell: /bin/bash
     lock_passwd: false
     passwd: {{ ansible_ssh_pass | password_hash('sha512') }}
+{% if ssh_public_key is defined %}
+    ssh_authorized_keys:
+      - {{ ssh_public_key }}
+{% endif %}
 
 # Configure static IP and register with RHSM
 runcmd:

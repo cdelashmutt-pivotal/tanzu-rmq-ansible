@@ -1,4 +1,45 @@
 ---
+# ============================================
+# Phase 1: Expand disk if provisioned larger than template default (40G)
+# ============================================
+- name: Expand RabbitMQ data volume
+  hosts: nodes
+  become: true
+  vars:
+    lvm_vg: "rhel_tanzu-rmq-template"
+    lvm_lv: "var_lib_rabbitmq"
+  tasks:
+    - name: Expand disk partition and LVM
+      when: vm.disk_gb | int > 40
+      block:
+        - name: Install growpart utility
+          ansible.builtin.dnf:
+            name: cloud-utils-growpart
+            state: present
+
+        - name: Grow partition 3 to fill disk
+          ansible.builtin.command: growpart /dev/sda 3
+          register: growpart_result
+          changed_when: "'CHANGED' in growpart_result.stdout"
+          failed_when: growpart_result.rc != 0 and 'NOCHANGE' not in growpart_result.stdout
+
+        - name: Resize physical volume
+          ansible.builtin.command: pvresize /dev/sda3
+          changed_when: true
+
+        - name: Extend logical volume to use all free space
+          ansible.builtin.command: lvextend -l +100%FREE /dev/{{ lvm_vg }}/{{ lvm_lv }}
+          register: lvextend_result
+          changed_when: "'successfully resized' in lvextend_result.stdout"
+          failed_when: lvextend_result.rc != 0 and 'matches existing size' not in lvextend_result.stderr
+
+        - name: Grow XFS filesystem
+          ansible.builtin.command: xfs_growfs /var/lib/rabbitmq
+          changed_when: true
+
+# ============================================
+# Phase 2: Install Tanzu RabbitMQ
+# ============================================
 - name: Install Tanzu RabbitMQ
   hosts: nodes
   become: true
@@ -47,6 +88,16 @@
           - tanzu-rabbitmq-server
         state: present
         update_cache: yes
+
+    - name: Configure RabbitMQ to advertise IP for stream connections
+      ansible.builtin.lineinfile:
+        path: /etc/rabbitmq/rabbitmq.conf
+        line: "stream.advertised_host = {{ ansible_host }}"
+        regexp: '^stream\.advertised_host'
+        create: true
+        owner: rabbitmq
+        group: rabbitmq
+        mode: '0644'
 
     - name: Enable and Start RabbitMQ Service
       ansible.builtin.systemd:
