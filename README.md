@@ -2,10 +2,10 @@
 
 Automated deployment of a Tanzu RabbitMQ multi-region lab environment with:
 
-- **3 Clusters** across 2 regions (Arizona + Texas), each with 3 nodes spanning 2 datacenters
+- **4 Clusters** across 2 regions (Arizona + Texas), each with 3 nodes spanning 2 datacenters
 - **Network Latency Simulation**: Metro (~3ms) within regions, cross-region (~35ms) between Arizona and Texas
-- **Warm Standby DR**: AZ-Cluster-1 replicates to AZ-Cluster-2 (regional standby) and TX-Cluster-1 (cross-region DR)
-- **9 Nodes Total**: 6 in Arizona (Phoenix + Chandler DCs), 3 in Texas (Dallas DCs)
+- **Warm Standby DR**: AZ-Cluster-1 replicates to AZ-Cluster-2 (regional standby), TX-Cluster-1 and TX-Cluster-2 (cross-region DR)
+- **12 Nodes Total**: 6 in Arizona (Phoenix + Chandler DCs), 6 in Texas (Dallas1 and Dallas2 DCs)
 
 ## Architecture
 
@@ -27,11 +27,16 @@ flowchart TD
         azrmq04 ---- azrmq05
     end
     subgraph tx_region["TX Region"]
-        subgraph dal_dc["DAL DC"]
-            direction LR
-            txrmq01["TX RMQ 01"] --- txrmq02["TX RMQ 02"] --- 
-            txrmq03["TX RMQ 03"]
+        subgraph dal1_dc["DAL1 DC"]
+            txrmq01["TX RMQ 01"] --- txrmq02["TX RMQ 02"] 
+            txrmq04["TX RMQ 04"]
         end
+        subgraph dal2_dc["DAL2 DC"]
+            txrmq03["TX RMQ 03"]
+            txrmq05["TX RMQ 05"] --- txrmq06["TX RMQ 06"]
+        end
+        txrmq02 ---- txrmq03
+        txrmq04 ---- txrmq05
     end
     az_region --- tx_region
 ```
@@ -47,8 +52,10 @@ flowchart LR
     subgraph tx_region["TX Region"]
         direction LR
         tx-cluster-1
+        tx-cluster-2
     end
-    az-cluster-2 -- Warm Standby Replication 35ms+-5ms --> tx-cluster-1
+    az-cluster-1 -- Warm Standby Replication 35ms+-5ms --> tx-cluster-1
+    az-cluster-1 -- Warm Standby Replication 35ms+-5ms --> tx-cluster-2
 ```
 ## Prerequisites
 
@@ -232,6 +239,7 @@ ansible-playbook playbooks/health_check.yml
 ansible az-rmq-01 -m command -a "rabbitmqctl cluster_status"
 ansible az-rmq-04 -m command -a "rabbitmqctl cluster_status"
 ansible tx-rmq-01 -m command -a "rabbitmqctl cluster_status"
+ansible tx-rmq-04 -m command -a "rabbitmqctl cluster_status"
 ```
 
 ### Verify latency simulation
@@ -246,7 +254,7 @@ ansible az-rmq-01 -m command -a "ping -c 3 tx-rmq-01"
 ### Reset admin password
 ```bash
 # Reset on all cluster seeds
-ansible az-rmq-01,az-rmq-04,tx-rmq-01 -m command -a "rabbitmqctl change_password admin newpassword"
+ansible az-rmq-01,az-rmq-04,tx-rmq-01,tx-rmq-04 -m command -a "rabbitmqctl change_password admin newpassword"
 ```
 
 ### Re-run specific stage
