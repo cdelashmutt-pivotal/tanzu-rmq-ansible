@@ -464,9 +464,10 @@ test_sustained_replication_throughput() {
         --confirm 50 \
         --id "throughput-pub" 2>&1) || true
 
-    # Extract metrics
+    # Extract metrics (macOS compatible)
     local send_rate
-    send_rate=$(echo "$output" | grep -oP 'sending rate avg: \K[0-9]+' | tail -1 || echo "0")
+    send_rate=$(echo "$output" | sed -n 's/.*sending rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+    send_rate="${send_rate:-0}"
 
     if [[ "$send_rate" -gt 0 ]]; then
         log_info "  Upstream publish rate: $send_rate msg/s"

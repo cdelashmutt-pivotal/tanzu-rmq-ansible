@@ -93,7 +93,7 @@ ssh_sudo() {
 get_interface() {
     local host="$1"
     ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "${SSH_USER}@${host}" \
-        "ip route get 8.8.8.8 | grep -oP 'dev \K\S+'" 2>/dev/null || echo "ens192"
+        "ip route get 8.8.8.8 | sed -n 's/.*dev \([^ ]*\).*/\1/p'" 2>/dev/null || echo "ens192"
 }
 
 # Configure uniform latency between all cluster nodes
@@ -159,16 +159,20 @@ run_perf_test() {
         --id "latency-sweep-${latency_ms}ms" \
         --auto-delete 2>&1) || true
 
-    # Extract metrics using grep/sed
+    # Extract metrics using sed (macOS compatible)
     local send_rate recv_rate
     local lat_min lat_median lat_p75 lat_p95 lat_p99 lat_max
 
-    send_rate=$(echo "$output" | grep -oP 'sending rate avg: \K[0-9]+' | tail -1 || echo "0")
-    recv_rate=$(echo "$output" | grep -oP 'receiving rate avg: \K[0-9]+' | tail -1 || echo "0")
+    send_rate=$(echo "$output" | sed -n 's/.*sending rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+    recv_rate=$(echo "$output" | sed -n 's/.*receiving rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+    send_rate="${send_rate:-0}"
+    recv_rate="${recv_rate:-0}"
 
     # Parse latency from "min/median/75th/95th/99th 123/456/789/..." format
+    # Example: "consumer latency min/median/75th/95th/99th 1234/5678/..."
     local latency_line
-    latency_line=$(echo "$output" | grep -oP 'consumer latency.*min/median.*\K[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+' | tail -1 || echo "")
+    latency_line=$(echo "$output" | grep "consumer latency" | grep "min/median" | \
+        sed -n 's/.*[^0-9]\([0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\).*/\1/p' | tail -1)
 
     if [[ -n "$latency_line" ]]; then
         # Convert from µs to ms and extract values
@@ -185,8 +189,9 @@ run_perf_test() {
         lat_p99=0
     fi
 
-    # Also try to get max latency
-    lat_max=$(echo "$output" | grep -oP 'consumer latency.*max \K[0-9]+' | tail -1 || echo "0")
+    # Also try to get max latency - look for pattern like "max 123456 µs"
+    lat_max=$(echo "$output" | grep "consumer latency" | sed -n 's/.*max \([0-9][0-9]*\).*/\1/p' | tail -1)
+    lat_max="${lat_max:-0}"
     lat_max=$((lat_max / 1000))
 
     echo "${latency_ms},${send_rate},${recv_rate},${lat_min},${lat_median},${lat_p95},${lat_p99},${lat_max}"

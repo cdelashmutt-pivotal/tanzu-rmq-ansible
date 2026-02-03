@@ -122,10 +122,12 @@ run_perf_test() {
         --auto-delete \
         $extra_args 2>&1); then
 
-        # Extract send/receive rates from output
+        # Extract send/receive rates from output (macOS compatible)
         local send_rate recv_rate
-        send_rate=$(echo "$output" | grep -oP 'sending rate avg: \K[0-9]+' | tail -1 || echo "0")
-        recv_rate=$(echo "$output" | grep -oP 'receiving rate avg: \K[0-9]+' | tail -1 || echo "0")
+        send_rate=$(echo "$output" | sed -n 's/.*sending rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+        recv_rate=$(echo "$output" | sed -n 's/.*receiving rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+        send_rate="${send_rate:-0}"
+        recv_rate="${recv_rate:-0}"
 
         if [[ "$send_rate" -gt 0 && "$recv_rate" -gt 0 ]]; then
             verbose "Send rate: $send_rate msg/s, Receive rate: $recv_rate msg/s"

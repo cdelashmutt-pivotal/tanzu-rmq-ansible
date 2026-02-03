@@ -494,9 +494,10 @@ test_packet_loss_resilience() {
     log_info "  Removing packet loss..."
     ssh_sudo "$NODE2_HOST" "tc qdisc del dev ens192 root 2>/dev/null" || true
 
-    # Check if test completed with reasonable throughput
+    # Check if test completed with reasonable throughput (macOS compatible)
     local send_rate
-    send_rate=$(echo "$output" | grep -oP 'sending rate avg: \K[0-9]+' | tail -1 || echo "0")
+    send_rate=$(echo "$output" | sed -n 's/.*sending rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+    send_rate="${send_rate:-0}"
 
     if [[ "$send_rate" -gt 100 ]]; then
         log_pass "Packet loss resilience verified (throughput: $send_rate msg/s)"
