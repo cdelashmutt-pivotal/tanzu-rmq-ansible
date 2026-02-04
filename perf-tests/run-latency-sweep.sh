@@ -8,12 +8,13 @@
 # Latency values tested: 0, 1, 2, 3, 5, 10, 15, 20, 35, 50 ms
 #
 # Output:
-#   - CSV file with columns: latency_ms, send_rate, recv_rate, lat_min, lat_median, lat_p95, lat_p99, lat_max
+#   - CSV file with columns: latency_ms, send_rate, recv_rate, confirm_lat_min, confirm_lat_median, confirm_lat_p95, confirm_lat_p99, confirm_lat_max
 #   - Summary report
 #
 # Usage:
 #   ./perf-tests/run-latency-sweep.sh --host 192.168.20.200
 #   ./perf-tests/run-latency-sweep.sh --host 192.168.20.200 --quick
+#   ./perf-tests/run-latency-sweep.sh --host 192.168.20.200 --no-restore
 # =============================================================================
 set -euo pipefail
 
@@ -29,6 +30,7 @@ PASSWORD=""
 SSH_USER="ansible"
 QUICK_MODE=false
 TEST_DURATION=60
+RESTORE_LATENCY=true
 
 # Latency values to test (milliseconds)
 # Full sweep
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --ssh-user)  SSH_USER="$2"; shift 2 ;;
         --quick)     QUICK_MODE=true; shift ;;
         --duration)  TEST_DURATION="$2"; shift 2 ;;
+        --no-restore) RESTORE_LATENCY=false; shift ;;
         *)           echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -89,6 +92,11 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_pass() { echo -e "${GREEN}[OK]${NC} $1"; }
+
+# Strip ANSI escape codes for clean file output
+strip_ansi() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
 
 # Execute sudo command on remote node
 ssh_sudo() {
@@ -144,13 +152,26 @@ clear_latency() {
     log_pass "Latency cleared"
 }
 
+# Restore original latency configuration via Ansible playbook
+restore_latency() {
+    log_info "Restoring original latency configuration via Ansible..."
+
+    if ! ansible-playbook -i "$PROJECT_DIR/inventory/hosts.yml" "$PROJECT_DIR/playbooks/configure_latency.yml" > /dev/null 2>&1; then
+        log_error "Failed to restore latency configuration!"
+        log_warn "Run manually: ansible-playbook -i inventory/hosts.yml playbooks/configure_latency.yml"
+        return 1
+    fi
+
+    log_pass "Original latency configuration restored"
+}
+
 # Run performance test and extract metrics
 run_perf_test() {
     local latency_ms="$1"
     local output
     local queue="latency-sweep-${latency_ms}ms"
 
-    log_info "Running performance test at ${latency_ms}ms latency..."
+    log_info "Running performance test at ${latency_ms}ms latency..." >&2
 
     # Run enterprise-typical workload: 5KB messages, 3k msg/s target, 2 publishers, 2 consumers
     output=$("$TOOLS_DIR/perf-test" \
@@ -176,31 +197,30 @@ run_perf_test() {
     send_rate="${send_rate:-0}"
     recv_rate="${recv_rate:-0}"
 
-    # Parse latency from "min/median/75th/95th/99th 123/456/789/..." format
-    # Example: "consumer latency min/median/75th/95th/99th 1234/5678/..."
+    # Parse confirm latency from "min/median/75th/95th/99th/max 123/456/789/..." format
+    # Example: "confirm latency min/median/75th/95th/99th/max 26376/45057/52783/72707/98042/209587 µs"
+    # Note: Using confirm latency (time to broker ack) instead of consumer latency
+    #       because consumer latency reports 0 when artificial network latency is added
     local latency_line
-    latency_line=$(echo "$output" | grep "consumer latency" | grep "min/median" | \
-        sed -n 's/.*[^0-9]\([0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\).*/\1/p' | tail -1)
+    latency_line=$(echo "$output" | grep "confirm latency" | grep "min/median" | \
+        sed -n 's/.*[^0-9]\([0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\/[0-9][0-9]*\).*/\1/p' | tail -1)
 
     if [[ -n "$latency_line" ]]; then
-        # Convert from µs to ms and extract values
-        IFS='/' read -r lat_min lat_median lat_p75 lat_p95 lat_p99 <<< "$latency_line"
+        # Convert from µs to ms and extract values (min/median/75th/95th/99th/max)
+        IFS='/' read -r lat_min lat_median lat_p75 lat_p95 lat_p99 lat_max <<< "$latency_line"
         # Values are in microseconds, convert to milliseconds
         lat_min=$((lat_min / 1000))
         lat_median=$((lat_median / 1000))
         lat_p95=$((lat_p95 / 1000))
         lat_p99=$((lat_p99 / 1000))
+        lat_max=$((lat_max / 1000))
     else
         lat_min=0
         lat_median=0
         lat_p95=0
         lat_p99=0
+        lat_max=0
     fi
-
-    # Also try to get max latency - look for pattern like "max 123456 µs"
-    lat_max=$(echo "$output" | grep "consumer latency" | sed -n 's/.*max \([0-9][0-9]*\).*/\1/p' | tail -1)
-    lat_max="${lat_max:-0}"
-    lat_max=$((lat_max / 1000))
 
     echo "${latency_ms},${send_rate},${recv_rate},${lat_min},${lat_median},${lat_p95},${lat_p99},${lat_max}"
 }
@@ -212,11 +232,16 @@ echo "=============================================="
 echo "  Target Host:   $HOST"
 echo "  Test Duration: ${TEST_DURATION}s per latency value"
 echo "  Quick Mode:    $QUICK_MODE"
+echo "  Restore After: $RESTORE_LATENCY"
 echo "  Latency Values: ${LATENCY_VALUES[*]} ms"
 echo "=============================================="
 echo ""
 echo -e "${YELLOW}WARNING: This test will modify network latency on cluster nodes!${NC}"
-echo -e "${YELLOW}The original latency configuration will be cleared at the end.${NC}"
+if $RESTORE_LATENCY; then
+    echo -e "${YELLOW}Original latency configuration will be restored at the end via Ansible.${NC}"
+else
+    echo -e "${YELLOW}Original latency configuration will NOT be restored (--no-restore specified).${NC}"
+fi
 echo ""
 read -rp "Continue? [y/N] " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -231,7 +256,7 @@ CSV_FILE="$RESULTS_DIR/${TIMESTAMP}-latency-sweep.csv"
 REPORT_FILE="$RESULTS_DIR/${TIMESTAMP}-latency-sweep-report.txt"
 
 # Initialize CSV
-echo "latency_ms,send_rate_msg_s,recv_rate_msg_s,lat_min_ms,lat_median_ms,lat_p95_ms,lat_p99_ms,lat_max_ms" > "$CSV_FILE"
+echo "latency_ms,send_rate_msg_s,recv_rate_msg_s,confirm_lat_min_ms,confirm_lat_median_ms,confirm_lat_p95_ms,confirm_lat_p99_ms,confirm_lat_max_ms" > "$CSV_FILE"
 
 # Initialize report
 {
@@ -244,8 +269,10 @@ echo "latency_ms,send_rate_msg_s,recv_rate_msg_s,lat_min_ms,lat_median_ms,lat_p9
     echo ""
     echo "## Raw Results"
     echo ""
+    echo "Note: Latency columns show confirm latency (time to broker acknowledgment)."
+    echo ""
     printf "| %-10s | %-12s | %-12s | %-10s | %-12s | %-10s | %-10s |\n" \
-        "Latency" "Send Rate" "Recv Rate" "Lat Min" "Lat Median" "Lat P95" "Lat P99"
+        "Net Lat" "Send Rate" "Recv Rate" "Cfm Min" "Cfm Median" "Cfm P95" "Cfm P99"
     printf "| %-10s | %-12s | %-12s | %-10s | %-12s | %-10s | %-10s |\n" \
         "----------" "------------" "------------" "----------" "------------" "----------" "----------"
 } > "$REPORT_FILE"
@@ -268,20 +295,25 @@ for latency_ms in "${LATENCY_VALUES[@]}"; do
 
     # Run test
     result=$(run_perf_test "$latency_ms")
-    echo "$result" >> "$CSV_FILE"
+    echo "$result" | strip_ansi >> "$CSV_FILE"
     results+=("$result")
 
-    # Parse for report
-    IFS=',' read -r lat send recv lat_min lat_med lat_p95 lat_p99 lat_max <<< "$result"
+    # Parse for report (strip any ANSI codes first)
+    clean_result=$(echo "$result" | strip_ansi)
+    IFS=',' read -r lat send recv lat_min lat_med lat_p95 lat_p99 lat_max <<< "$clean_result"
     printf "| %-10s | %-12s | %-12s | %-10s | %-12s | %-10s | %-10s |\n" \
         "${lat}ms" "${send} msg/s" "${recv} msg/s" "${lat_min}ms" "${lat_med}ms" "${lat_p95}ms" "${lat_p99}ms" >> "$REPORT_FILE"
 
-    log_pass "Completed: send=${send} msg/s, recv=${recv} msg/s, p99=${lat_p99}ms"
+    log_pass "Completed: send=${send} msg/s, recv=${recv} msg/s, confirm_p99=${lat_p99}ms"
 done
 
-# Clear latency configuration
+# Clear latency configuration and optionally restore original
 echo ""
 clear_latency
+
+if $RESTORE_LATENCY; then
+    restore_latency
+fi
 
 # Add summary to report
 {
@@ -292,14 +324,15 @@ clear_latency
     echo ""
 
     # Calculate degradation from baseline (0ms)
-    local baseline_send baseline_recv
     if [[ ${#results[@]} -gt 0 ]]; then
-        IFS=',' read -r _ baseline_send baseline_recv _ _ _ _ _ <<< "${results[0]}"
+        clean_baseline=$(echo "${results[0]}" | strip_ansi)
+        IFS=',' read -r _ baseline_send baseline_recv _ _ _ _ _ <<< "$clean_baseline"
 
         for result in "${results[@]}"; do
-            IFS=',' read -r lat send recv _ _ _ _ _ <<< "$result"
+            clean_res=$(echo "$result" | strip_ansi)
+            IFS=',' read -r lat send recv _ _ _ _ _ <<< "$clean_res"
             if [[ "$baseline_send" -gt 0 ]]; then
-                local send_pct=$((100 * send / baseline_send))
+                send_pct=$((100 * send / baseline_send))
                 echo "- At ${lat}ms: ${send_pct}% of baseline throughput (${send} msg/s)"
             fi
         done

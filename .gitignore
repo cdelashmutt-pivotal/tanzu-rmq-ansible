@@ -18,6 +18,7 @@ venv/
 
 # Performance test results and tools (downloaded JARs)
 perf-tests/results/*.txt
+perf-tests/results/*.csv
 perf-tests/tools/
 
 # IDE
