@@ -41,12 +41,20 @@ NODE1_HOST="192.168.20.200"  # az-rmq-01
 NODE2_HOST="192.168.20.201"  # az-rmq-02
 NODE3_HOST="192.168.20.202"  # az-rmq-03
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Colors for terminal output (disabled when piped/redirected)
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m'
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -153,11 +161,11 @@ run_perf_test() {
         --consumers 2 \
         --time "$TEST_DURATION" \
         --size 5000 \
-        --publishing-rate 1500 \
+        --rate 1500 \
         --confirm 50 \
         --multi-ack-every 50 \
         --id "latency-sweep-${latency_ms}ms" \
-        --auto-delete 2>&1) || true
+        --auto-delete true 2>&1) || true
 
     # Extract metrics using sed (macOS compatible)
     local send_rate recv_rate

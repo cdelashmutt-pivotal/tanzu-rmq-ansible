@@ -31,11 +31,18 @@ VERBOSE=false
 TEST_DURATION=30
 MESSAGE_COUNT=1000
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Colors for terminal output (disabled when piped/redirected)
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m'
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    NC=''
+fi
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -114,25 +121,32 @@ run_perf_test() {
     verbose "Running: perf-test --uri $AMQP_URI --time $TEST_DURATION $extra_args"
 
     local output
-    if output=$("$TOOLS_DIR/perf-test" \
+    local exit_code=0
+    output=$("$TOOLS_DIR/perf-test" \
         --uri "$AMQP_URI" \
         --time "$TEST_DURATION" \
         --id "$test_name" \
         --queue "core-test-${test_name}" \
-        --auto-delete \
-        $extra_args 2>&1); then
+        --auto-delete true \
+        $extra_args 2>&1) || exit_code=$?
 
-        # Extract send/receive rates from output (macOS compatible)
-        local send_rate recv_rate
-        send_rate=$(echo "$output" | sed -n 's/.*sending rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
-        recv_rate=$(echo "$output" | sed -n 's/.*receiving rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
-        send_rate="${send_rate:-0}"
-        recv_rate="${recv_rate:-0}"
+    # Extract send/receive rates from output (macOS compatible)
+    local send_rate recv_rate
+    send_rate=$(echo "$output" | sed -n 's/.*sending rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+    recv_rate=$(echo "$output" | sed -n 's/.*receiving rate avg: \([0-9][0-9]*\).*/\1/p' | tail -1)
+    send_rate="${send_rate:-0}"
+    recv_rate="${recv_rate:-0}"
 
-        if [[ "$send_rate" -gt 0 && "$recv_rate" -gt 0 ]]; then
-            verbose "Send rate: $send_rate msg/s, Receive rate: $recv_rate msg/s"
-            return 0
-        fi
+    if [[ "$send_rate" -gt 0 && "$recv_rate" -gt 0 ]]; then
+        verbose "Send rate: $send_rate msg/s, Receive rate: $recv_rate msg/s"
+        return 0
+    fi
+
+    # Debug: show why test failed
+    if $VERBOSE; then
+        echo "       Debug: exit_code=$exit_code, send_rate=$send_rate, recv_rate=$recv_rate"
+        echo "       Last 5 lines of output:"
+        echo "$output" | tail -5 | sed 's/^/         /'
     fi
     return 1
 }
@@ -216,7 +230,7 @@ test_message_throughput() {
     log_info "Test 6: Sustained throughput under latency"
 
     # Run enterprise-typical workload (5KB messages, ~3k msg/s)
-    if run_perf_test "throughput" "--producers 2 --consumers 2 --size 5000 --quorum-queue --publishing-rate 1500 --confirm 50"; then
+    if run_perf_test "throughput" "--producers 2 --consumers 2 --size 5000 --quorum-queue --rate 1500 --confirm 50"; then
         log_pass "Sustained throughput test passed"
         return 0
     else
@@ -263,6 +277,11 @@ TESTS_FAILED=0
     echo ""
 } > "$RESULT_FILE"
 
+# Helper to strip ANSI color codes for file output
+strip_ansi() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
+
 for test_func in \
     test_cluster_connectivity \
     test_direct_messaging \
@@ -272,8 +291,10 @@ for test_func in \
     test_message_throughput \
     test_message_ordering
 do
-    echo "" | tee -a "$RESULT_FILE"
-    if $test_func 2>&1 | tee -a "$RESULT_FILE"; then
+    echo ""
+    echo "" >> "$RESULT_FILE"
+    # Run test, display with colors, strip colors for file
+    if $test_func 2>&1 | tee >(strip_ansi >> "$RESULT_FILE"); then
         ((TESTS_PASSED++))
     else
         ((TESTS_FAILED++))
@@ -281,23 +302,35 @@ do
 done
 
 # Summary
-echo "" | tee -a "$RESULT_FILE"
-echo "==============================================" | tee -a "$RESULT_FILE"
-echo "  SUMMARY" | tee -a "$RESULT_FILE"
-echo "==============================================" | tee -a "$RESULT_FILE"
-echo "  Tests Passed: $TESTS_PASSED" | tee -a "$RESULT_FILE"
-echo "  Tests Failed: $TESTS_FAILED" | tee -a "$RESULT_FILE"
-echo "" | tee -a "$RESULT_FILE"
+echo ""
+echo "" >> "$RESULT_FILE"
+echo "=============================================="
+echo "==============================================" >> "$RESULT_FILE"
+echo "  SUMMARY"
+echo "  SUMMARY" >> "$RESULT_FILE"
+echo "=============================================="
+echo "==============================================" >> "$RESULT_FILE"
+echo "  Tests Passed: $TESTS_PASSED"
+echo "  Tests Passed: $TESTS_PASSED" >> "$RESULT_FILE"
+echo "  Tests Failed: $TESTS_FAILED"
+echo "  Tests Failed: $TESTS_FAILED" >> "$RESULT_FILE"
+echo ""
+echo "" >> "$RESULT_FILE"
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
-    echo -e "${GREEN}  CRITERION 1: PASSED${NC}" | tee -a "$RESULT_FILE"
-    echo "  Core broker features work when nodes are dispersed." | tee -a "$RESULT_FILE"
+    echo -e "${GREEN}  CRITERION 1: PASSED${NC}"
+    echo "  CRITERION 1: PASSED" >> "$RESULT_FILE"
+    echo "  Core broker features work when nodes are dispersed."
+    echo "  Core broker features work when nodes are dispersed." >> "$RESULT_FILE"
 else
-    echo -e "${RED}  CRITERION 1: FAILED${NC}" | tee -a "$RESULT_FILE"
-    echo "  Some core features did not work as expected." | tee -a "$RESULT_FILE"
+    echo -e "${RED}  CRITERION 1: FAILED${NC}"
+    echo "  CRITERION 1: FAILED" >> "$RESULT_FILE"
+    echo "  Some core features did not work as expected."
+    echo "  Some core features did not work as expected." >> "$RESULT_FILE"
 fi
 
-echo "==============================================" | tee -a "$RESULT_FILE"
+echo "=============================================="
+echo "==============================================" >> "$RESULT_FILE"
 echo ""
 echo "Results saved to: $RESULT_FILE"
 

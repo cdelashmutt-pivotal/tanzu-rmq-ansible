@@ -146,7 +146,7 @@ else
     [[ -n "$MESSAGE_SIZE" ]] && CMD+=(--size "$MESSAGE_SIZE")
     [[ -n "$MULTI_ACK" ]] && CMD+=(--multi-ack-every "$MULTI_ACK")
     [[ "$CONFIRM" == "true" ]] && CMD+=(--confirm "$MULTI_ACK")
-    [[ -n "$PUB_RATE" && "$PUB_RATE" != "0" ]] && CMD+=(--publishing-rate "$PUB_RATE")
+    [[ -n "$PUB_RATE" && "$PUB_RATE" != "0" ]] && CMD+=(--rate "$PUB_RATE")
     [[ -n "$CONSUMER_RATE" && "$CONSUMER_RATE" != "0" ]] && CMD+=(--consumer-rate "$CONSUMER_RATE")
 
     # Queue type flags

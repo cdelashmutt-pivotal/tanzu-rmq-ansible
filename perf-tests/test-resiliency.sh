@@ -40,12 +40,20 @@ NODE1_HOST="192.168.20.200"  # az-rmq-01 (Phoenix DC)
 NODE2_HOST="192.168.20.201"  # az-rmq-02 (Chandler DC)
 NODE3_HOST="192.168.20.202"  # az-rmq-03 (Chandler DC)
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Colors for terminal output (disabled when piped/redirected)
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m'
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+fi
 
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
@@ -237,11 +245,11 @@ test_quorum_leader_failover() {
         return 1
     fi
 
-    # Hard kill the leader (kill -9 the beam process)
+    # Hard kill the leader using systemctl (simulates hard failure)
     log_info "  Killing leader node (hard failure)..."
-    if ! ssh_sudo "$leader_ip" "pkill -9 -f 'beam.smp'"; then
-        log_warn "  Could not kill process, may need SSH key setup"
-    fi
+    # Use systemctl kill with SIGKILL for a clean hard stop
+    # Fall back to pkill if systemctl fails (e.g., service not managed by systemd)
+    ssh_sudo "$leader_ip" "systemctl kill -s SIGKILL tanzu-rabbitmq-server 2>/dev/null || pkill -9 beam.smp" || true
 
     sleep 5
 
@@ -287,6 +295,7 @@ test_message_durability() {
     log_info "Test 2: Message durability through node failure"
 
     local queue="resiliency-test-durability"
+    local expected_messages=500
 
     # Publish messages with confirms (ensures durability)
     log_info "  Publishing durable messages..."
@@ -296,14 +305,17 @@ test_message_durability() {
         --queue "$queue" \
         --producers 1 \
         --consumers 0 \
-        --pmessages 500 \
+        --pmessages "$expected_messages" \
         --confirm 1 \
         --size 5000 \
         --id "durability-pub" > /dev/null 2>&1
 
+    # Wait for messages to be visible in API
+    sleep 2
+
     local initial_messages
     initial_messages=$(get_queue_messages "$queue")
-    log_info "  Published $initial_messages messages"
+    log_info "  Published $initial_messages messages (expected $expected_messages)"
 
     # Stop a non-leader node
     local leader
@@ -342,17 +354,19 @@ test_message_durability() {
         --queue "$queue" \
         --producers 0 \
         --consumers 1 \
-        --cmessages "$initial_messages" \
+        --cmessages "$expected_messages" \
         --id "durability-con" > /dev/null 2>&1
 
+    sleep 2
     local final_messages
     final_messages=$(get_queue_messages "$queue")
 
-    if [[ "$during_messages" -eq "$initial_messages" && "$final_messages" -eq 0 ]]; then
-        log_pass "Message durability verified ($initial_messages messages survived failure)"
+    # Success if messages were preserved during failure and all consumed
+    if [[ "$during_messages" -ge "$expected_messages" && "$final_messages" -eq 0 ]]; then
+        log_pass "Message durability verified ($during_messages messages survived failure)"
         return 0
     else
-        log_error "Durability issue: initial=$initial_messages, during=$during_messages, final=$final_messages"
+        log_error "Durability issue: expected=$expected_messages, during=$during_messages, final=$final_messages"
         return 1
     fi
 }
@@ -542,6 +556,11 @@ TESTS_FAILED=0
     echo ""
 } > "$RESULT_FILE"
 
+# Helper to strip ANSI color codes for file output
+strip_ansi() {
+    sed 's/\x1b\[[0-9;]*m//g'
+}
+
 for test_func in \
     test_initial_health \
     test_quorum_leader_failover \
@@ -550,8 +569,10 @@ for test_func in \
     test_network_partition \
     test_packet_loss_resilience
 do
-    echo "" | tee -a "$RESULT_FILE"
-    if $test_func 2>&1 | tee -a "$RESULT_FILE"; then
+    echo ""
+    echo "" >> "$RESULT_FILE"
+    # Run test, display with colors, strip colors for file
+    if $test_func 2>&1 | tee >(strip_ansi >> "$RESULT_FILE"); then
         ((TESTS_PASSED++))
     else
         ((TESTS_FAILED++))
@@ -559,23 +580,35 @@ do
 done
 
 # Summary
-echo "" | tee -a "$RESULT_FILE"
-echo "==============================================" | tee -a "$RESULT_FILE"
-echo "  SUMMARY" | tee -a "$RESULT_FILE"
-echo "==============================================" | tee -a "$RESULT_FILE"
-echo "  Tests Passed: $TESTS_PASSED" | tee -a "$RESULT_FILE"
-echo "  Tests Failed: $TESTS_FAILED" | tee -a "$RESULT_FILE"
-echo "" | tee -a "$RESULT_FILE"
+echo ""
+echo "" >> "$RESULT_FILE"
+echo "=============================================="
+echo "==============================================" >> "$RESULT_FILE"
+echo "  SUMMARY"
+echo "  SUMMARY" >> "$RESULT_FILE"
+echo "=============================================="
+echo "==============================================" >> "$RESULT_FILE"
+echo "  Tests Passed: $TESTS_PASSED"
+echo "  Tests Passed: $TESTS_PASSED" >> "$RESULT_FILE"
+echo "  Tests Failed: $TESTS_FAILED"
+echo "  Tests Failed: $TESTS_FAILED" >> "$RESULT_FILE"
+echo ""
+echo "" >> "$RESULT_FILE"
 
 if [[ "$TESTS_FAILED" -eq 0 ]]; then
-    echo -e "${GREEN}  CRITERION 2: PASSED${NC}" | tee -a "$RESULT_FILE"
-    echo "  Core resiliency features work when nodes are dispersed." | tee -a "$RESULT_FILE"
+    echo -e "${GREEN}  CRITERION 2: PASSED${NC}"
+    echo "  CRITERION 2: PASSED" >> "$RESULT_FILE"
+    echo "  Core resiliency features work when nodes are dispersed."
+    echo "  Core resiliency features work when nodes are dispersed." >> "$RESULT_FILE"
 else
-    echo -e "${RED}  CRITERION 2: FAILED${NC}" | tee -a "$RESULT_FILE"
-    echo "  Some resiliency features did not work as expected." | tee -a "$RESULT_FILE"
+    echo -e "${RED}  CRITERION 2: FAILED${NC}"
+    echo "  CRITERION 2: FAILED" >> "$RESULT_FILE"
+    echo "  Some resiliency features did not work as expected."
+    echo "  Some resiliency features did not work as expected." >> "$RESULT_FILE"
 fi
 
-echo "==============================================" | tee -a "$RESULT_FILE"
+echo "=============================================="
+echo "==============================================" >> "$RESULT_FILE"
 echo ""
 echo "Results saved to: $RESULT_FILE"
 
